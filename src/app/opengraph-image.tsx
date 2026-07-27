@@ -2,15 +2,19 @@ import { ImageResponse } from 'next/og';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Uses node:fs to embed the logo, so pin the Node.js runtime explicitly.
+export const runtime = 'nodejs';
 export const alt = 'Koreth — Borrow against your LP';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
+// Read the logo once per instance, not on every request.
+const logoSrc = `data:image/svg+xml;base64,${readFileSync(
+  join(process.cwd(), 'public', 'koreth-logo.svg')
+).toString('base64')}`;
+
 // Branded social-share card (used for OpenGraph and Twitter fallback).
 export default function OgImage() {
-  const logo = readFileSync(join(process.cwd(), 'public', 'koreth-logo.svg'));
-  const logoSrc = `data:image/svg+xml;base64,${logo.toString('base64')}`;
-
   return new ImageResponse(
     (
       <div

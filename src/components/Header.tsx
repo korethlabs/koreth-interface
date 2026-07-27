@@ -26,7 +26,7 @@ export function Header() {
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
-    query: {enabled: isConnected && !!address},
+    query: {enabled: isConnected && !!address && !wrongChain},
   });
 
   return (
