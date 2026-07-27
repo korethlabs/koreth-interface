@@ -224,16 +224,17 @@ function PositionCard({
               label="Repay"
               disabled={parsed === 0n || parsed > debtBn}
               onConfirmed={() => {
-                setRepaidNote(Number(repayAmt).toLocaleString('en-US', {maximumFractionDigits: 2}));
+                // Use the exact repaid amount (bigint) rather than re-parsing the input.
+                setRepaidNote(formatUnits(parsed, decimals));
                 setRepayAmt('');
                 refetchAll();
               }}
             />
           </div>
           <p className="text-xs text-[var(--muted)]">
-            Repaying returns borrowed {symbol} to the protocol and lowers your debt. If it&rsquo;s your
-            first repayment you&rsquo;ll confirm two wallet prompts — a one-time {symbol} approval, then
-            the repayment. Clear your debt fully to withdraw your collateral.
+            Repaying returns borrowed {symbol} to the protocol and lowers your debt. When your {symbol}
+            allowance is too low you&rsquo;ll first confirm an approval, then the repayment (two wallet
+            prompts). Clear your debt fully to withdraw your collateral.
           </p>
         </div>
       )}
