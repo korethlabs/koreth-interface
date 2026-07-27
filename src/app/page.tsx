@@ -44,7 +44,7 @@ export default function Dashboard() {
           src="/koreth-logo.svg"
           alt=""
           aria-hidden
-          className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 h-72 opacity-[0.06] pointer-events-none"
+          className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 h-72 opacity-[0.1] pointer-events-none"
         />
       </section>
 
