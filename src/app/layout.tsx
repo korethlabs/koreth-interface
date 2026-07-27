@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { Web3Provider } from '@/providers/Web3Provider';
@@ -6,9 +6,31 @@ import { Header } from '@/components/Header';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
+const title = 'Koreth — Borrow against your LP';
+const description =
+  'Unlock liquidity from your LP positions without withdrawing. Lend and borrow on Koreth.';
+
 export const metadata: Metadata = {
-  title: 'Koreth — Borrow against your LP',
-  description: 'Unlock liquidity from your LP positions without withdrawing. Lend and borrow on Koreth.',
+  metadataBase: new URL('https://app.koreth.finance'),
+  title: { default: title, template: '%s · Koreth' },
+  description,
+  applicationName: 'Koreth',
+  openGraph: {
+    title,
+    description,
+    url: '/',
+    siteName: 'Koreth',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title,
+    description,
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#05070d',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

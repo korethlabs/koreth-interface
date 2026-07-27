@@ -1,8 +1,8 @@
-import {auroraLocal} from './chain';
+import {korethLocal} from './chain';
 
 // Direct JSON-RPC to the anvil fork (for dev-only methods like anvil_setBalance / impersonation
 // that MetaMask can't perform). Same URL as the app's chain transport.
-const RPC_URL = auroraLocal.rpcUrls.default.http[0];
+const RPC_URL = korethLocal.rpcUrls.default.http[0];
 
 export async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
   const res = await fetch(RPC_URL, {

@@ -31,7 +31,7 @@ export default function Dashboard() {
             <span className="gradient-text">Keep earning.</span>
           </h1>
           <p className="mt-5 text-lg text-[var(--muted-strong)] max-w-xl">
-            Unlock liquidity from your Uniswap positions without withdrawing — supply stablecoins to earn,
+            Unlock liquidity from your LP positions without withdrawing — supply stablecoins to earn,
             or post LP as collateral and borrow.
           </p>
           <div className="mt-8 flex gap-3">
@@ -41,10 +41,10 @@ export default function Dashboard() {
         </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src="/koreth-logo-white.svg"
+          src="/koreth-logo.svg"
           alt=""
           aria-hidden
-          className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 h-64 opacity-[0.06] pointer-events-none"
+          className="hidden lg:block absolute right-0 top-1/2 -translate-y-1/2 h-72 opacity-[0.06] pointer-events-none"
         />
       </section>
 

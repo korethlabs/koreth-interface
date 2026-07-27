@@ -6,8 +6,7 @@ import {ConnectKitButton} from 'connectkit';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {auroraLocal} from '@/lib/chain';
-import {AddNetworkButton} from './AddNetworkButton';
+import {korethLocal} from '@/lib/chain';
 
 const NAV = [
   {href: '/', label: 'Dashboard'},
@@ -21,7 +20,7 @@ const NAV = [
 export function Header() {
   const pathname = usePathname();
   const {address, isConnected, chainId} = useAccount();
-  const wrongChain = !isConnected || chainId !== auroraLocal.id;
+  const wrongChain = !isConnected || chainId !== korethLocal.id;
   const {data: usdcBal} = useReadContract({
     address: deployments.usdc,
     abi: erc20Abi,
@@ -36,7 +35,7 @@ export function Header() {
         <div className="flex items-center gap-8">
           <Link href="/" className="flex items-center gap-2.5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/koreth-logo-white.svg" alt="Koreth" className="h-7 w-auto opacity-95" />
+            <img src="/koreth-logo.svg" alt="Koreth" className="h-9 w-auto opacity-95" />
             <span className="text-lg font-semibold tracking-tight">Koreth</span>
           </Link>
           <nav className="hidden md:flex items-center gap-6 text-sm">
@@ -56,7 +55,6 @@ export function Header() {
               {Number(formatUnits(usdcBal, 6)).toLocaleString('en-US', {maximumFractionDigits: 2})} USDC
             </span>
           )}
-          {wrongChain && <AddNetworkButton />}
           <ConnectKitButton />
         </div>
       </div>
