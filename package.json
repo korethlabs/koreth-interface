@@ -1,0 +1,35 @@
+{
+  "name": "@koreth/interface",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prepare-frontend": "node scripts/prepare-frontend.mjs",
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "clean": "rm -rf .next"
+  },
+  "dependencies": {
+    "@koreth/sdk": "git+ssh://git@github.com/korethlabs/koreth-sdk.git",
+    "@tanstack/react-query": "^5.65.0",
+    "connectkit": "^1.8.0",
+    "framer-motion": "^12.0.0",
+    "next": "^15.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.15.0",
+    "viem": "^2.25.0",
+    "wagmi": "^2.15.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.3.0",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.8.0"
+  }
+}
