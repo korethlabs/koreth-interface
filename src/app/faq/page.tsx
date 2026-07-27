@@ -1,4 +1,5 @@
 import { LegalPage } from '@/components/LegalPage';
+import { links } from '@/lib/links';
 
 export const metadata = {
   title: 'FAQ',
@@ -49,8 +50,12 @@ export default function FaqPage() {
 
       <h3>Where can I get help?</h3>
       <p>
-        Join our community on Discord for questions and support. You can also review the{' '}
-        <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.
+        Join our community on{' '}
+        <a href={links.discord} target="_blank" rel="noreferrer">
+          Discord
+        </a>{' '}
+        for questions and support. You can also review the <a href="/terms">Terms of Service</a> and{' '}
+        <a href="/privacy">Privacy Policy</a>.
       </p>
     </LegalPage>
   );
