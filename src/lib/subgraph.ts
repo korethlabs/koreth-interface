@@ -64,5 +64,5 @@ export interface SubgraphPosition {
   lpType: string;
   depositValue: string;
   currentDebt: string;
-  market: { id: string; lpType: string; borrowAsset: string; symbol: string; decimals: number };
+  market: { id: string; address: string; lpType: string; borrowAsset: string; symbol: string; decimals: number };
 }
