@@ -1,0 +1,25 @@
+name: Deploy
+
+# Interface changes rebuild only the interface container (fork/contracts/subgraph
+# untouched). Runs on the self-hosted runner on spartakus after merge to main.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
+
+concurrency:
+  group: koreth-deploy-interface
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, spartakus]
+    steps:
+      - name: Redeploy interface
+        run: |
+          set -e
+          cd "$HOME/koreth"
+          git pull --ff-only
+          ./scripts/deploy-interface.sh
