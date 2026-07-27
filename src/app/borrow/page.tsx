@@ -162,12 +162,19 @@ function DepositV2Card({
   );
 }
 
-interface V3Position {
-  token0: string;
-  token1: string;
-  fee: number;
-  liquidity: bigint;
-}
+// viem decodes a multi-output function (positions() has 12 outputs) as a positional
+// tuple, not an object — so we index it rather than accessing named fields.
+type V3PositionResult = readonly [
+  bigint, // nonce
+  string, // operator
+  string, // token0
+  string, // token1
+  number, // fee
+  number, // tickLower
+  number, // tickUpper
+  bigint, // liquidity
+  ...unknown[],
+];
 
 function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketId: string; onDone: () => void}) {
   const {data: nftCount, refetch: refetchCount} = useReadContract({address: V3_NFT_MANAGER, abi: nftManagerAbi, functionName: 'balanceOf', args: [owner]});
@@ -194,13 +201,14 @@ function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketI
     query: {enabled: tokenIds.length > 0},
   });
   const eligible = tokenIds.filter((_, i) => {
-    const p = posResults?.[i]?.result as V3Position | undefined;
+    const p = posResults?.[i]?.result as V3PositionResult | undefined;
+    if (!p) return false;
+    const [, , token0, token1, fee, , , liquidity] = p;
     return (
-      !!p &&
-      p.token0.toLowerCase() === deployments.usdc.toLowerCase() &&
-      p.token1.toLowerCase() === deployments.weth.toLowerCase() &&
-      Number(p.fee) === V3_FEE &&
-      p.liquidity > 0n
+      token0?.toLowerCase() === deployments.usdc.toLowerCase() &&
+      token1?.toLowerCase() === deployments.weth.toLowerCase() &&
+      Number(fee) === V3_FEE &&
+      liquidity > 0n
     );
   });
 
