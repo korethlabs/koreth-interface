@@ -4,7 +4,7 @@ import {useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi, marketAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi, marketAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import type {SubgraphPosition, SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
@@ -115,6 +115,7 @@ function PositionCard({
   onDone: () => void;
 }) {
   const [repayAmt, setRepayAmt] = useState('');
+  const [repaidNote, setRepaidNote] = useState<string | null>(null);
   const id = BigInt(position.id);
   const asset = position.market.borrowAsset as `0x${string}`;
   const {symbol, decimals} = position.market;
@@ -144,6 +145,21 @@ function PositionCard({
     args: [owner, deployments.lendingEngine],
   });
 
+  // Live borrow APR for this position's market (same read as the Markets page):
+  // interest-rate model rate at the market's current utilization.
+  const marketAddr = position.market.address as `0x${string}`;
+  const {data: marketState} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'getMarketState'});
+  const {data: irm} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'interestRateModel'});
+  const irmAddr = irm as `0x${string}` | undefined;
+  const util = (marketState as {utilization: bigint} | undefined)?.utilization ?? 0n;
+  const {data: borrowAprBps} = useReadContract({
+    address: irmAddr,
+    abi: interestRateModelAbi,
+    functionName: 'getBorrowRateAPR',
+    args: [util],
+    query: {enabled: !!irmAddr && marketState !== undefined},
+  });
+
   const debtBn = (debt as bigint) ?? 0n;
   const parsed = parseAmount(repayAmt, decimals);
   const noDebt = debtBn === 0n;
@@ -162,9 +178,13 @@ function PositionCard({
         <span className="text-sm text-[var(--muted-strong)] capitalize">{position.status}</span>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
         <Stat label="Collateral" value={`$${Number(position.depositValue).toLocaleString('en-US', {maximumFractionDigits: 0})}`} />
         <Stat label="Debt" value={`${Number(formatUnits(debtBn, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`} />
+        <Stat
+          label="Borrow APR"
+          value={borrowAprBps === undefined ? '—' : `${(Number(borrowAprBps) / 100).toFixed(2)}%`}
+        />
         <Stat label="Health" value={formatHealth(health as bigint | undefined)} />
         <Stat
           label="Max borrow"
@@ -172,34 +192,50 @@ function PositionCard({
         />
       </div>
 
+      {repaidNote && (
+        <p className="text-sm text-[var(--accent)]">
+          ✓ Repaid {repaidNote} {symbol}.{' '}
+          {noDebt ? 'Debt cleared — you can now withdraw your collateral below.' : 'Your remaining debt is shown above.'}
+        </p>
+      )}
+
       {!noDebt && (
-        <div className="flex gap-2 items-start">
-          <input
-            value={repayAmt}
-            onChange={(e) => setRepayAmt(e.target.value)}
-            placeholder={`Repay ${symbol}`}
-            inputMode="decimal"
-            className="input flex-1 p-2.5"
-          />
-          <button
-            onClick={() => setRepayAmt(formatUnits(debtBn, decimals))}
-            className="btn-ghost px-3 text-sm"
-          >
-            Max
-          </button>
-          <ActionButton
-            approve={{token: asset, spender: deployments.lendingEngine, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
-            address={deployments.lendingEngine}
-            abi={lendingEngineAbi}
-            functionName="repay"
-            args={[id, parsed]}
-            label="Repay"
-            disabled={parsed === 0n || parsed > debtBn}
-            onConfirmed={() => {
-              setRepayAmt('');
-              refetchAll();
-            }}
-          />
+        <div className="space-y-2">
+          <div className="flex gap-2 items-start">
+            <input
+              value={repayAmt}
+              onChange={(e) => setRepayAmt(e.target.value)}
+              placeholder={`Repay ${symbol}`}
+              inputMode="decimal"
+              className="input flex-1 p-2.5"
+            />
+            <button
+              onClick={() => setRepayAmt(formatUnits(debtBn, decimals))}
+              className="btn-ghost px-3 text-sm"
+            >
+              Max
+            </button>
+            <ActionButton
+              approve={{token: asset, spender: deployments.lendingEngine, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+              address={deployments.lendingEngine}
+              abi={lendingEngineAbi}
+              functionName="repay"
+              args={[id, parsed]}
+              label="Repay"
+              disabled={parsed === 0n || parsed > debtBn}
+              onConfirmed={() => {
+                // Use the exact repaid amount (bigint) rather than re-parsing the input.
+                setRepaidNote(formatUnits(parsed, decimals));
+                setRepayAmt('');
+                refetchAll();
+              }}
+            />
+          </div>
+          <p className="text-xs text-[var(--muted)]">
+            Repaying returns borrowed {symbol} to the protocol and lowers your debt. When your {symbol}
+            allowance is too low you&rsquo;ll first confirm an approval, then the repayment (two wallet
+            prompts). Clear your debt fully to withdraw your collateral.
+          </p>
         </div>
       )}
 

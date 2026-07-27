@@ -61,7 +61,7 @@ export function useSupplyPositions(user?: string) {
   });
 }
 
-const POSITION_FIELDS = `id owner status lpType depositValue currentDebt market { id lpType borrowAsset symbol decimals }`;
+const POSITION_FIELDS = `id owner status lpType depositValue currentDebt market { id address lpType borrowAsset symbol decimals }`;
 
 /** Indexed positions, optionally filtered to a single owner. */
 export function useSubgraphPositions(owner?: string) {
