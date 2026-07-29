@@ -53,7 +53,7 @@ export default function BorrowPage() {
   // Which LP types the protocol will actually accept. deposit() reverts COLLATERAL_NOT_ENABLED
   // for anything disabled in RiskManager, so rendering a card for a disabled type gives the user
   // a button that always fails. Under isolated markets this was implicit — no market, no card.
-  const {data: collateralTypes} = useCollateralTypes();
+  const {data: collateralTypes, isLoading: loadingCollateral} = useCollateralTypes();
   const enabled = useMemo(() => new Set((collateralTypes ?? []).map((c) => c.id)), [collateralTypes]);
 
   return (
@@ -71,7 +71,12 @@ export default function BorrowPage() {
         <div className="space-y-10">
           <section>
             <h2 className="text-sm font-medium text-[var(--muted)] uppercase tracking-wide mb-3">Deposit collateral</h2>
-            {enabled.size === 0 ? (
+            {/* `enabled` is empty both while the query is in flight and when the protocol really
+                accepts nothing, so the loading branch comes first — otherwise every page load
+                flashes the empty state before the cards appear. */}
+            {loadingCollateral ? (
+              <div className="card p-10 text-center text-[var(--muted)]">Loading…</div>
+            ) : enabled.size === 0 ? (
               <div className="card p-10 text-center text-[var(--muted)]">
                 No collateral types are currently accepted.
               </div>
@@ -116,7 +121,14 @@ function useBorrowAssetChoice(pools: SubgraphPool[]) {
     // re-index makes `pools` go empty and come back with different addresses; keeping the stale
     // one would leave the <select> rendering blank while still passing the non-empty check, and
     // the deposit would revert INVALID_POOL.
-    if (!pools.length) return;
+    // An empty list clears the selection rather than keeping the last one. react-query holds
+    // previous data across a refetch, so an empty `pools` means the query really did come back
+    // empty — and a leftover address would keep the deposit button enabled (it only checks
+    // `borrowAsset !== ''`) while the form says there are no pools, sending a doomed tx.
+    if (!pools.length) {
+      setBorrowAsset('');
+      return;
+    }
     if (!pools.some((p) => p.borrowAsset === borrowAsset)) {
       setBorrowAsset(pools[0].borrowAsset as `0x${string}`);
     }
