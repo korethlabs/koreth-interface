@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['@koreth/sdk'],
   webpack: (config, { webpack }) => {
     // wagmi's Base Account connector (@coinbase/cdp-sdk) references optional
     // @x402/* payment modules that we don't use and don't install. Ignore the

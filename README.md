@@ -1,11 +1,11 @@
 # Koreth Interface
 
 The **Koreth** dApp — a Next.js (App Router) frontend for depositing LP positions as
-collateral, borrowing stablecoins, supplying to markets, and managing positions.
+collateral, borrowing stablecoins, supplying to lending pools, and managing positions.
 
-Built with wagmi + viem + ConnectKit for wallet/RPC, TanStack Query for data, Tailwind for
-styling, and the [`@koreth/sdk`](https://github.com/korethlabs/koreth-sdk) for shared types.
-Indexed data comes from [`koreth-subgraph`](https://github.com/korethlabs/koreth-subgraph).
+Built with wagmi + viem + ConnectKit for wallet/RPC, TanStack Query for data, and Tailwind for
+styling. Types and ABIs are generated from the core Foundry build (see below); indexed data comes
+from [`koreth-subgraph`](https://github.com/korethlabs/koreth-subgraph).
 
 ## Stack
 
@@ -13,7 +13,6 @@ Indexed data comes from [`koreth-subgraph`](https://github.com/korethlabs/koreth
 - **wagmi / viem / ConnectKit** — wallet + contract calls
 - **@tanstack/react-query** — async state
 - **Tailwind CSS v4**
-- **@koreth/sdk** — protocol types (installed as a git dependency)
 
 ## Generated contract bindings
 
@@ -31,7 +30,7 @@ This writes `src/generated/deployments.ts` (addresses/chainId) and `src/generate
 ## Develop
 
 ```bash
-npm install            # installs deps incl. @koreth/sdk over SSH
+npm install
 npm run prepare-frontend
 npm run dev            # http://localhost:3000
 ```
