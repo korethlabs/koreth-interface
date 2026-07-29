@@ -7,6 +7,10 @@ function formatUsd(value: string | undefined): string {
   return n.toLocaleString('en-US', {style: 'currency', currency: 'USD', maximumFractionDigits: 2});
 }
 
+function formatAmount(value: string | undefined): string {
+  return Number(value ?? 0).toLocaleString('en-US', {maximumFractionDigits: 2});
+}
+
 const STATUS_STYLES: Record<string, string> = {
   active: 'text-[var(--accent)] border-[var(--accent)]/40',
   borrowed: 'text-[var(--accent-2)] border-[var(--accent-2)]/40',
@@ -90,7 +94,11 @@ export default function Dashboard() {
                       {p.owner.slice(0, 6)}…{p.owner.slice(-4)}
                     </td>
                     <td className="px-5 py-3.5 text-right tabular-nums">{formatUsd(p.depositValue)}</td>
-                    <td className="px-5 py-3.5 text-right tabular-nums">{formatUsd(p.currentDebt)}</td>
+                    {/* depositValue is USD, but currentDebt is denominated in the pool's borrow
+                        asset — only the same thing for a pegged stablecoin. */}
+                    <td className="px-5 py-3.5 text-right tabular-nums">
+                      {formatAmount(p.currentDebt)} {p.pool.symbol}
+                    </td>
                   </tr>
                 ))}
               </tbody>

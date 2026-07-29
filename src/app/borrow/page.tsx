@@ -5,7 +5,7 @@ import {useAccount, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
-import {useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
+import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -50,6 +50,12 @@ export default function BorrowPage() {
   // deposit cards' default-selection effect.
   const poolList = useMemo(() => pools ?? [], [pools]);
 
+  // Which LP types the protocol will actually accept. deposit() reverts COLLATERAL_NOT_ENABLED
+  // for anything disabled in RiskManager, so rendering a card for a disabled type gives the user
+  // a button that always fails. Under isolated markets this was implicit — no market, no card.
+  const {data: collateralTypes} = useCollateralTypes();
+  const enabled = useMemo(() => new Set((collateralTypes ?? []).map((c) => c.id)), [collateralTypes]);
+
   return (
     <main className="max-w-5xl mx-auto px-6 py-16">
       <div className="mb-10">
@@ -65,10 +71,20 @@ export default function BorrowPage() {
         <div className="space-y-10">
           <section>
             <h2 className="text-sm font-medium text-[var(--muted)] uppercase tracking-wide mb-3">Deposit collateral</h2>
-            <div className="grid lg:grid-cols-2 gap-4">
-              <DepositV2Card owner={address!} pools={poolList} onDone={() => refetchPositions()} />
-              <V3DepositCard owner={address!} pools={poolList} onDone={() => refetchPositions()} />
-            </div>
+            {enabled.size === 0 ? (
+              <div className="card p-10 text-center text-[var(--muted)]">
+                No collateral types are currently accepted.
+              </div>
+            ) : (
+              <div className="grid lg:grid-cols-2 gap-4">
+                {enabled.has('UniswapV2') && (
+                  <DepositV2Card owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                )}
+                {enabled.has('UniswapV3') && (
+                  <V3DepositCard owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                )}
+              </div>
+            )}
           </section>
 
           <section>
@@ -96,7 +112,14 @@ export default function BorrowPage() {
 function useBorrowAssetChoice(pools: SubgraphPool[]) {
   const [borrowAsset, setBorrowAsset] = useState<`0x${string}` | ''>('');
   useEffect(() => {
-    if (!borrowAsset && pools.length) setBorrowAsset(pools[0].borrowAsset as `0x${string}`);
+    // Reset whenever the selection isn't in the list, not just when it's empty. A subgraph
+    // re-index makes `pools` go empty and come back with different addresses; keeping the stale
+    // one would leave the <select> rendering blank while still passing the non-empty check, and
+    // the deposit would revert INVALID_POOL.
+    if (!pools.length) return;
+    if (!pools.some((p) => p.borrowAsset === borrowAsset)) {
+      setBorrowAsset(pools[0].borrowAsset as `0x${string}`);
+    }
   }, [pools, borrowAsset]);
   return {borrowAsset, setBorrowAsset};
 }
@@ -113,13 +136,17 @@ function BorrowAssetSelect({
   return (
     <div>
       <label className="block text-xs text-[var(--muted)] mb-1">Borrow asset</label>
-      <select value={value} onChange={(e) => onChange(e.target.value as `0x${string}`)} className="input w-full p-2.5">
-        {pools.map((p) => (
-          <option key={p.id} value={p.borrowAsset}>
-            Borrow {p.symbol}
-          </option>
-        ))}
-      </select>
+      {pools.length === 0 ? (
+        <p className="text-sm text-[var(--muted)] py-2.5">No lending pools available yet.</p>
+      ) : (
+        <select value={value} onChange={(e) => onChange(e.target.value as `0x${string}`)} className="input w-full p-2.5">
+          {pools.map((p) => (
+            <option key={p.id} value={p.borrowAsset}>
+              Borrow {p.symbol}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }
@@ -304,7 +331,11 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
 
   const debtBn = (debt as bigint) ?? 0n;
-  const available = (maxBorrow as bigint) ?? 0n;
+  // getMaxBorrow is the position's total borrowing capacity, and borrow() checks
+  // `currentDebt + amount <= maxBorrow`. Showing it raw as "Available" made the Max button
+  // always revert EXCEEDS_MAX_LTV on any position that already had debt.
+  const capacity = (maxBorrow as bigint) ?? 0n;
+  const available = capacity > debtBn ? capacity - debtBn : 0n;
   const parsed = parseAmount(amount, decimals);
   const valid = parsed > 0n && parsed <= available;
   const hf = health as bigint | undefined;
