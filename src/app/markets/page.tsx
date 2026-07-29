@@ -141,6 +141,8 @@ function CollateralRow({collateral}: {collateral: SubgraphCollateralType}) {
       <td className="p-3 text-right">{bpsPct(collateral.maxLtv)}</td>
       <td className="p-3 text-right">{bpsPct(collateral.liquidationThreshold)}</td>
       <td className="p-3 text-right">{bpsPct(collateral.liquidationBonus, 1)}</td>
+      {/* currentBorrows is a subgraph BigDecimal, already scaled down to whole USD — unlike
+          borrowCap below, which is the raw 18-dec BigInt read straight off RiskManager. */}
       <td className="p-3 text-right">{usd(collateral.currentBorrows)}</td>
       <td className="p-3 text-right">
         {cap === NO_BORROW_CAP ? 'Uncapped' : usd(formatUnits(cap, 18))}
