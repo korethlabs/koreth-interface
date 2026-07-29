@@ -51,7 +51,7 @@ export default function Dashboard() {
       {/* Protocol stats */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-14">
         <StatCard label="Total Value Locked" value={formatUsd(stats?.totalTVL)} />
-        <StatCard label="Total Borrowed" value={formatUsd(stats?.totalBorrowed)} />
+        <StatCard label="Total Borrowed" value={formatUsd(stats?.globalBorrowsUsd)} />
         <StatCard label="Active Positions" value={stats?.totalPositions ?? '0'} />
         <StatCard label="Lending pools" value={pools ? String(pools.length) : '0'} />
       </section>

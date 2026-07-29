@@ -32,7 +32,12 @@ export async function querySubgraph<T>(
 
 export interface SubgraphProtocolStats {
   totalTVL: string;
-  totalBorrowed: string;
+  /**
+   * Protocol-wide borrows in USD, as tracked by RiskManager. This replaces the old
+   * `totalBorrowed`, which summed each pool's borrows in its own units and so added USDC to
+   * WETH once more than one pool existed.
+   */
+  globalBorrowsUsd: string;
   totalPositions: string;
   totalLiquidations: string;
   totalFeesCollected: string;

@@ -17,7 +17,7 @@ export function useProtocolStats() {
     queryFn: async () => {
       const data = await querySubgraph<{ protocolStats: SubgraphProtocolStats | null }>(
         `{ protocolStats(id: "1") {
-            totalTVL totalBorrowed totalPositions totalLiquidations totalFeesCollected
+            totalTVL globalBorrowsUsd totalPositions totalLiquidations totalFeesCollected
         } }`,
       );
       return data.protocolStats;
