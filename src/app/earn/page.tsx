@@ -3,9 +3,9 @@
 import {useMemo, useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
-import {marketAbi, interestRateModelAbi} from '@/generated/abis';
-import {useSubgraphMarkets, useSupplyPositions} from '@/hooks/useSubgraph';
-import type {SubgraphMarket, SubgraphSupplyPosition} from '@/lib/subgraph';
+import {lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
+import {useSubgraphPools, useSupplyPositions} from '@/hooks/useSubgraph';
+import type {SubgraphPool, SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
@@ -26,7 +26,7 @@ function fmt(n: number): string {
 
 export default function EarnPage() {
   const {address, isConnected} = useAccount();
-  const {data: markets} = useSubgraphMarkets();
+  const {data: pools} = useSubgraphPools();
   const {data: supplies, refetch: refetchSupplies} = useSupplyPositions(address);
 
   const totalSupplied = useMemo(
@@ -53,12 +53,12 @@ export default function EarnPage() {
         <div className="card p-10 text-center text-[var(--muted)]">Connect your wallet to supply.</div>
       ) : (
         <div className="grid md:grid-cols-2 gap-4">
-          {(markets ?? []).map((m) => (
-            <MarketSupplyCard
-              key={m.id}
-              market={m}
+          {(pools ?? []).map((p) => (
+            <PoolSupplyCard
+              key={p.id}
+              pool={p}
               owner={address!}
-              position={(supplies ?? []).find((s) => s.market.id === m.id)}
+              position={(supplies ?? []).find((s) => s.pool.id === p.id)}
               onDone={() => refetchSupplies()}
             />
           ))}
@@ -68,26 +68,26 @@ export default function EarnPage() {
   );
 }
 
-function MarketSupplyCard({
-  market,
+function PoolSupplyCard({
+  pool,
   owner,
   position,
   onDone,
 }: {
-  market: SubgraphMarket;
+  pool: SubgraphPool;
   owner: `0x${string}`;
   position?: SubgraphSupplyPosition;
   onDone: () => void;
 }) {
   const [amount, setAmount] = useState('');
-  const asset = market.borrowAsset as `0x${string}`;
-  const marketAddr = market.address as `0x${string}`;
+  const asset = pool.borrowAsset as `0x${string}`;
+  const poolAddr = pool.address as `0x${string}`;
 
   const {data: walletBal, refetch: refetchBal} = useReadContract({address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, refetch: refetchAllow} = useReadContract({address: asset, abi: erc20Abi, functionName: 'allowance', args: [owner, marketAddr]});
-  const {data: state} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'getMarketState'});
-  const {data: irm} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'interestRateModel'});
-  const {data: reserve} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'reserveFactorBps'});
+  const {data: allowance, refetch: refetchAllow} = useReadContract({address: asset, abi: erc20Abi, functionName: 'allowance', args: [owner, poolAddr]});
+  const {data: state} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'getPoolState'});
+  const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
+  const {data: reserve} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'reserveFactorBps'});
 
   const util = (state as {utilization: bigint} | undefined)?.utilization ?? 0n;
   const irmAddr = irm as `0x${string}` | undefined;
@@ -103,7 +103,7 @@ function MarketSupplyCard({
       ? '—'
       : `${(Number(formatUnits((supplyRatePerSec as bigint) * SECONDS_PER_YEAR, 18)) * 100).toFixed(2)}%`;
 
-  const parsed = parseAmount(amount, market.decimals);
+  const parsed = parseAmount(amount, pool.decimals);
   const balance = (walletBal as bigint) ?? 0n;
   const valid = parsed > 0n && parsed <= balance;
   const shares = position ? BigInt(position.shares) : 0n;
@@ -113,10 +113,10 @@ function MarketSupplyCard({
       {/* Header: token chip + APR */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <TokenChip label={market.symbol} />
+          <TokenChip label={pool.symbol} />
           <div>
-            <p className="font-semibold leading-tight">{market.symbol}</p>
-            <p className="text-xs text-[var(--muted)]">{market.lpType} · market #{market.id}</p>
+            <p className="font-semibold leading-tight">{pool.symbol}</p>
+            <p className="text-xs text-[var(--muted)]">Lent to every collateral type</p>
           </div>
         </div>
         <div className="text-right">
@@ -129,7 +129,7 @@ function MarketSupplyCard({
       <div className="grid grid-cols-2 gap-3 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Total supplied</p>
-          <p className="tabular-nums">{fmt(Number(market.totalSupply))}</p>
+          <p className="tabular-nums">{fmt(Number(pool.totalSupply))}</p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Your supply</p>
@@ -141,8 +141,8 @@ function MarketSupplyCard({
       <div className="space-y-2.5">
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
           <span>Wallet</span>
-          <button onClick={() => setAmount(formatUnits(balance, market.decimals))} className="hover:text-[var(--foreground)]">
-            {fmt(Number(formatUnits(balance, market.decimals)))} {market.symbol} · Max
+          <button onClick={() => setAmount(formatUnits(balance, pool.decimals))} className="hover:text-[var(--foreground)]">
+            {fmt(Number(formatUnits(balance, pool.decimals)))} {pool.symbol} · Max
           </button>
         </div>
         <div className="flex gap-2">
@@ -154,9 +154,9 @@ function MarketSupplyCard({
             className="input flex-1 p-2.5"
           />
           <ActionButton
-            approve={{token: asset, spender: marketAddr, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
-            address={marketAddr}
-            abi={marketAbi}
+            approve={{token: asset, spender: poolAddr, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+            address={poolAddr}
+            abi={lendingPoolAbi}
             functionName="supply"
             args={[parsed]}
             label="Supply"
@@ -171,8 +171,8 @@ function MarketSupplyCard({
         </div>
         {shares > 0n && (
           <TxButton
-            address={marketAddr}
-            abi={marketAbi}
+            address={poolAddr}
+            abi={lendingPoolAbi}
             functionName="withdraw"
             args={[shares]}
             label="Withdraw all"

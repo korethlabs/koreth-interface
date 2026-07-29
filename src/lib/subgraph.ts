@@ -38,23 +38,39 @@ export interface SubgraphProtocolStats {
   totalFeesCollected: string;
 }
 
-export interface SubgraphMarket {
+/** A shared lending pool — one per borrow asset, open to every collateral type. */
+export interface SubgraphPool {
   id: string;
   address: string;
-  lpType: string;
   borrowAsset: string;
   symbol: string;
   decimals: number;
-  maxLtv: string;
   totalSupply: string;
 }
+
+/**
+ * Risk parameters for one LP type. These are set once in RiskManager and apply across every
+ * pool, so they are keyed by collateral type rather than by market.
+ */
+export interface SubgraphCollateralType {
+  id: string;
+  lpType: number;
+  maxLtv: string;
+  liquidationThreshold: string;
+  liquidationBonus: string;
+  borrowCap: string;
+  enabled: boolean;
+  currentBorrows: string;
+}
+
+export type SubgraphPoolRef = {id: string; address: string; symbol: string; decimals: number; borrowAsset: string};
 
 export interface SubgraphSupplyPosition {
   id: string;
   user: string;
   shares: string;
   suppliedAmount: string;
-  market: {id: string; address: string; symbol: string; decimals: number; borrowAsset: string};
+  pool: SubgraphPoolRef;
 }
 
 export interface SubgraphPosition {
@@ -64,5 +80,5 @@ export interface SubgraphPosition {
   lpType: string;
   depositValue: string;
   currentDebt: string;
-  market: { id: string; address: string; lpType: string; borrowAsset: string; symbol: string; decimals: number };
+  pool: SubgraphPoolRef;
 }

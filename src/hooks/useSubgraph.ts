@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import {
   querySubgraph,
   type SubgraphProtocolStats,
-  type SubgraphMarket,
+  type SubgraphPool,
+  type SubgraphCollateralType,
   type SubgraphPosition,
   type SubgraphSupplyPosition,
 } from '../lib/subgraph';
@@ -25,21 +26,37 @@ export function useProtocolStats() {
   });
 }
 
-/** All markets with their config (lpType, borrow asset, symbol, decimals, max LTV, supply). */
-export function useSubgraphMarkets() {
+/** Every shared lending pool — one per borrow asset. */
+export function useSubgraphPools() {
   return useQuery({
-    queryKey: ['sg', 'markets'],
+    queryKey: ['sg', 'pools'],
     queryFn: async () => {
-      const data = await querySubgraph<{ markets: SubgraphMarket[] }>(
-        `{ markets(orderBy: id) { id address lpType borrowAsset symbol decimals maxLtv totalSupply } }`,
+      const data = await querySubgraph<{ pools: SubgraphPool[] }>(
+        `{ pools(orderBy: symbol) { id address borrowAsset symbol decimals totalSupply } }`,
       );
-      return data.markets;
+      return data.pools;
     },
     refetchInterval: 30_000,
   });
 }
 
-/** A user's lender supply positions across markets. */
+/** Risk params per collateral type. Disabled types are filtered out — they can't back new debt. */
+export function useCollateralTypes() {
+  return useQuery({
+    queryKey: ['sg', 'collateralTypes'],
+    queryFn: async () => {
+      const data = await querySubgraph<{ collateralTypes: SubgraphCollateralType[] }>(
+        `{ collateralTypes(where: { enabled: true }, orderBy: lpType) {
+            id lpType maxLtv liquidationThreshold liquidationBonus borrowCap enabled currentBorrows
+        } }`,
+      );
+      return data.collateralTypes;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
+/** A user's lender supply positions across pools. */
 export function useSupplyPositions(user?: string) {
   return useQuery({
     queryKey: ['sg', 'supplyPositions', user ?? 'none'],
@@ -49,7 +66,7 @@ export function useSupplyPositions(user?: string) {
         `query Supplies($user: Bytes) {
           supplyPositions(where: { user: $user }) {
             id user shares suppliedAmount
-            market { id address symbol decimals borrowAsset }
+            pool { id address symbol decimals borrowAsset }
           }
         }`,
         { user: user.toLowerCase() },
@@ -61,7 +78,7 @@ export function useSupplyPositions(user?: string) {
   });
 }
 
-const POSITION_FIELDS = `id owner status lpType depositValue currentDebt market { id address lpType borrowAsset symbol decimals }`;
+const POSITION_FIELDS = `id owner status lpType depositValue currentDebt pool { id address symbol decimals borrowAsset }`;
 
 /** Indexed positions, optionally filtered to a single owner. */
 export function useSubgraphPositions(owner?: string) {

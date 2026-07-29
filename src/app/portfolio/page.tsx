@@ -4,7 +4,7 @@ import {useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi, marketAbi, interestRateModelAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import type {SubgraphPosition, SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
@@ -74,7 +74,7 @@ export default function PortfolioPage() {
 }
 
 function SupplyCard({supply, onDone}: {supply: SubgraphSupplyPosition; onDone: () => void}) {
-  const {symbol, id: marketId, address: marketAddr} = supply.market;
+  const {symbol, address: poolAddr} = supply.pool;
   const shares = BigInt(supply.shares);
   return (
     <div className="card card-hover p-5 space-y-4">
@@ -83,7 +83,7 @@ function SupplyCard({supply, onDone}: {supply: SubgraphSupplyPosition; onDone: (
           <TokenChip label={symbol} />
           <div>
             <p className="font-semibold leading-tight">{symbol}</p>
-            <p className="text-xs text-[var(--muted)]">Supplied · market #{marketId}</p>
+            <p className="text-xs text-[var(--muted)]">Supplied</p>
           </div>
         </div>
         <div className="text-right">
@@ -94,8 +94,8 @@ function SupplyCard({supply, onDone}: {supply: SubgraphSupplyPosition; onDone: (
         </div>
       </div>
       <TxButton
-        address={marketAddr as `0x${string}`}
-        abi={marketAbi}
+        address={poolAddr as `0x${string}`}
+        abi={lendingPoolAbi}
         functionName="withdraw"
         args={[shares]}
         label="Withdraw all"
@@ -117,8 +117,8 @@ function PositionCard({
   const [repayAmt, setRepayAmt] = useState('');
   const [repaidNote, setRepaidNote] = useState<string | null>(null);
   const id = BigInt(position.id);
-  const asset = position.market.borrowAsset as `0x${string}`;
-  const {symbol, decimals} = position.market;
+  const asset = position.pool.borrowAsset as `0x${string}`;
+  const {symbol, decimals} = position.pool;
 
   const {data: debt, refetch: refetchDebt} = useReadContract({
     address: deployments.lendingEngine,
@@ -145,19 +145,19 @@ function PositionCard({
     args: [owner, deployments.lendingEngine],
   });
 
-  // Live borrow APR for this position's market (same read as the Markets page):
-  // interest-rate model rate at the market's current utilization.
-  const marketAddr = position.market.address as `0x${string}`;
-  const {data: marketState} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'getMarketState'});
-  const {data: irm} = useReadContract({address: marketAddr, abi: marketAbi, functionName: 'interestRateModel'});
+  // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
+  // model rate at the pool's current utilization. Shared across every collateral type now.
+  const poolAddr = position.pool.address as `0x${string}`;
+  const {data: poolState} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'getPoolState'});
+  const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
   const irmAddr = irm as `0x${string}` | undefined;
-  const util = (marketState as {utilization: bigint} | undefined)?.utilization ?? 0n;
+  const util = (poolState as {utilization: bigint} | undefined)?.utilization ?? 0n;
   const {data: borrowAprBps} = useReadContract({
     address: irmAddr,
     abi: interestRateModelAbi,
     functionName: 'getBorrowRateAPR',
     args: [util],
-    query: {enabled: !!irmAddr && marketState !== undefined},
+    query: {enabled: !!irmAddr && poolState !== undefined},
   });
 
   const debtBn = (debt as bigint) ?? 0n;

@@ -5,9 +5,8 @@ import {useAccount, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
-import {useSubgraphMarkets, useSubgraphPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPosition} from '@/lib/subgraph';
-import {tokenInfo} from '@/lib/tokens';
+import {useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
+import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
@@ -43,11 +42,13 @@ function healthColor(hf: bigint | undefined): string {
 
 export default function BorrowPage() {
   const {address, isConnected} = useAccount();
-  const {data: markets} = useSubgraphMarkets();
+  const {data: pools} = useSubgraphPools();
   const {data: positions, refetch: refetchPositions} = useSubgraphPositions(address);
 
-  const v2Markets = useMemo(() => (markets ?? []).filter((m) => m.lpType === 'UniswapV2'), [markets]);
-  const v3Market = useMemo(() => (markets ?? []).find((m) => m.lpType === 'UniswapV3'), [markets]);
+  // Every pool accepts every collateral type now, so V2 and V3 deposits pick from the same list
+  // rather than each being tied to its own market. Memoized to keep a stable identity for the
+  // deposit cards' default-selection effect.
+  const poolList = useMemo(() => pools ?? [], [pools]);
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-16">
@@ -65,8 +66,8 @@ export default function BorrowPage() {
           <section>
             <h2 className="text-sm font-medium text-[var(--muted)] uppercase tracking-wide mb-3">Deposit collateral</h2>
             <div className="grid lg:grid-cols-2 gap-4">
-              <DepositV2Card owner={address!} v2Markets={v2Markets} onDone={() => refetchPositions()} />
-              {v3Market && <V3DepositCard owner={address!} marketId={v3Market.id} onDone={() => refetchPositions()} />}
+              <DepositV2Card owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+              <V3DepositCard owner={address!} pools={poolList} onDone={() => refetchPositions()} />
             </div>
           </section>
 
@@ -88,28 +89,59 @@ export default function BorrowPage() {
   );
 }
 
+/**
+ * Picks which shared pool the new position will draw from. The user chooses a borrow asset,
+ * not a market — a single pool per asset now backs every collateral type.
+ */
+function useBorrowAssetChoice(pools: SubgraphPool[]) {
+  const [borrowAsset, setBorrowAsset] = useState<`0x${string}` | ''>('');
+  useEffect(() => {
+    if (!borrowAsset && pools.length) setBorrowAsset(pools[0].borrowAsset as `0x${string}`);
+  }, [pools, borrowAsset]);
+  return {borrowAsset, setBorrowAsset};
+}
+
+function BorrowAssetSelect({
+  pools,
+  value,
+  onChange,
+}: {
+  pools: SubgraphPool[];
+  value: string;
+  onChange: (v: `0x${string}`) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-[var(--muted)] mb-1">Borrow asset</label>
+      <select value={value} onChange={(e) => onChange(e.target.value as `0x${string}`)} className="input w-full p-2.5">
+        {pools.map((p) => (
+          <option key={p.id} value={p.borrowAsset}>
+            Borrow {p.symbol}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function DepositV2Card({
   owner,
-  v2Markets,
+  pools,
   onDone,
 }: {
   owner: `0x${string}`;
-  v2Markets: {id: string; borrowAsset: string}[];
+  pools: SubgraphPool[];
   onDone: () => void;
 }) {
   const [amount, setAmount] = useState('');
-  const [marketId, setMarketId] = useState('');
-
-  useEffect(() => {
-    if (!marketId && v2Markets.length) setMarketId(v2Markets[0].id);
-  }, [v2Markets, marketId]);
+  const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
 
   const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
   const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
   const parsed = parseAmount(amount, LP_DECIMALS);
   const balance = (lpBalance as bigint) ?? 0n;
-  const valid = parsed > 0n && parsed <= balance && marketId !== '';
+  const valid = parsed > 0n && parsed <= balance && borrowAsset !== '';
 
   return (
     <div className="card p-5 space-y-4">
@@ -121,16 +153,7 @@ function DepositV2Card({
         </div>
       </div>
 
-      <div>
-        <label className="block text-xs text-[var(--muted)] mb-1">Borrow market</label>
-        <select value={marketId} onChange={(e) => setMarketId(e.target.value)} className="input w-full p-2.5">
-          {v2Markets.map((m) => (
-            <option key={m.id} value={m.id}>
-              Borrow {tokenInfo(m.borrowAsset).symbol} (market #{m.id})
-            </option>
-          ))}
-        </select>
-      </div>
+      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
@@ -146,7 +169,7 @@ function DepositV2Card({
             address={deployments.positionManager}
             abi={positionManagerAbi}
             functionName="deposit"
-            args={[deployments.v2Pair, 0n, parsed, BigInt(marketId || '0')]}
+            args={[deployments.v2Pair, 0n, parsed, borrowAsset]}
             label="Deposit"
             disabled={!valid}
             onConfirmed={() => {
@@ -176,7 +199,8 @@ type V3PositionResult = readonly [
   ...unknown[],
 ];
 
-function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketId: string; onDone: () => void}) {
+function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: SubgraphPool[]; onDone: () => void}) {
+  const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
   const {data: nftCount, refetch: refetchCount} = useReadContract({address: V3_NFT_MANAGER, abi: nftManagerAbi, functionName: 'balanceOf', args: [owner]});
   const n = Number((nftCount as bigint) ?? 0n);
 
@@ -225,9 +249,11 @@ function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketI
         <TokenChip label="V3" color={LP_COLOR} />
         <div>
           <p className="font-semibold leading-tight">Uniswap V3 position</p>
-          <p className="text-xs text-[var(--muted)]">WETH/USDC · NFT · borrow USDC</p>
+          <p className="text-xs text-[var(--muted)]">WETH/USDC · NFT</p>
         </div>
       </div>
+
+      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       {eligible.length === 0 ? (
         <p className="text-sm text-[var(--muted)]">No WETH/USDC V3 positions — get one from the Faucet.</p>
@@ -252,8 +278,9 @@ function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketI
                 address={deployments.positionManager}
                 abi={positionManagerAbi}
                 functionName="deposit"
-                args={[V3_NFT_MANAGER, id, 0n, BigInt(marketId)]}
+                args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
                 label="Deposit"
+                disabled={borrowAsset === ''}
                 onConfirmed={() => {
                   refetchCount();
                   onDone();
@@ -270,7 +297,7 @@ function V3DepositCard({owner, marketId, onDone}: {owner: `0x${string}`; marketI
 function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onDone: () => void}) {
   const [amount, setAmount] = useState('');
   const id = BigInt(position.id);
-  const {symbol, decimals} = position.market;
+  const {symbol, decimals} = position.pool;
 
   const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id]});
   const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
