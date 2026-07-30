@@ -12,7 +12,6 @@
     "clean": "rm -rf .next"
   },
   "dependencies": {
-    "@koreth/sdk": "git+ssh://git@github.com/korethlabs/koreth-sdk.git",
     "@tanstack/react-query": "^5.65.0",
     "connectkit": "^1.8.0",
     "framer-motion": "^12.0.0",

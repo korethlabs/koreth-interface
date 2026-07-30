@@ -1,10 +1,14 @@
 'use client';
 
-import {useProtocolStats, useSubgraphMarkets, useSubgraphPositions} from '../hooks/useSubgraph';
+import {useProtocolStats, useSubgraphPools, useSubgraphPositions} from '../hooks/useSubgraph';
 
 function formatUsd(value: string | undefined): string {
   const n = Number(value ?? 0);
   return n.toLocaleString('en-US', {style: 'currency', currency: 'USD', maximumFractionDigits: 2});
+}
+
+function formatAmount(value: string | undefined): string {
+  return Number(value ?? 0).toLocaleString('en-US', {maximumFractionDigits: 2});
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -16,7 +20,7 @@ const STATUS_STYLES: Record<string, string> = {
 
 export default function Dashboard() {
   const {data: stats} = useProtocolStats();
-  const {data: markets} = useSubgraphMarkets();
+  const {data: pools} = useSubgraphPools();
   const {data: positions, isLoading, error} = useSubgraphPositions();
 
   return (
@@ -51,9 +55,9 @@ export default function Dashboard() {
       {/* Protocol stats */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-14">
         <StatCard label="Total Value Locked" value={formatUsd(stats?.totalTVL)} />
-        <StatCard label="Total Borrowed" value={formatUsd(stats?.totalBorrowed)} />
+        <StatCard label="Total Borrowed" value={formatUsd(stats?.globalBorrowsUsd)} />
         <StatCard label="Active Positions" value={stats?.totalPositions ?? '0'} />
-        <StatCard label="Markets" value={markets ? String(markets.length) : '0'} />
+        <StatCard label="Lending pools" value={pools ? String(pools.length) : '0'} />
       </section>
 
       {/* Positions */}
@@ -90,7 +94,11 @@ export default function Dashboard() {
                       {p.owner.slice(0, 6)}…{p.owner.slice(-4)}
                     </td>
                     <td className="px-5 py-3.5 text-right tabular-nums">{formatUsd(p.depositValue)}</td>
-                    <td className="px-5 py-3.5 text-right tabular-nums">{formatUsd(p.currentDebt)}</td>
+                    {/* depositValue is USD, but currentDebt is denominated in the pool's borrow
+                        asset — only the same thing for a pegged stablecoin. */}
+                    <td className="px-5 py-3.5 text-right tabular-nums">
+                      {formatAmount(p.currentDebt)} {p.pool.symbol}
+                    </td>
                   </tr>
                 ))}
               </tbody>
