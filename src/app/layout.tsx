@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { Web3Provider } from '@/providers/Web3Provider';
 import { Header } from '@/components/Header';
+import { SubgraphStatusBanner } from '@/components/SubgraphStatusBanner';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body suppressHydrationWarning>
         <Web3Provider>
           <Header />
+          <SubgraphStatusBanner />
           {children}
         </Web3Provider>
       </body>
