@@ -10,13 +10,37 @@ import {
   type SubgraphSupplyPosition,
 } from '../lib/subgraph';
 
+/**
+ * Every root field below passes `subgraphError: allow`. Without it a subgraph that failed on
+ * one handler returns *no* entity fields for any query, so the whole app renders zeros with no
+ * explanation; with it, graph-node serves what it indexed before the failure and flags the
+ * staleness separately (see useSubgraphHealth).
+ */
+
+/**
+ * Indexing health, for the stale-data banner. Kept apart from the data hooks so a degraded
+ * subgraph is reported once, not per-query.
+ */
+export function useSubgraphHealth() {
+  return useQuery({
+    queryKey: ['sg', 'health'],
+    queryFn: async () => {
+      const data = await querySubgraph<{
+        _meta: { hasIndexingErrors: boolean; block: { number: number; timestamp: number } } | null;
+      }>(`{ _meta(subgraphError: allow) { hasIndexingErrors block { number timestamp } } }`);
+      return data._meta;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
 /** Protocol-wide indexed aggregates (TVL, borrowed, position/liquidation counts). */
 export function useProtocolStats() {
   return useQuery({
     queryKey: ['sg', 'protocolStats'],
     queryFn: async () => {
       const data = await querySubgraph<{ protocolStats: SubgraphProtocolStats | null }>(
-        `{ protocolStats(id: "1") {
+        `{ protocolStats(id: "1", subgraphError: allow) {
             totalTVL globalBorrowsUsd totalPositions totalLiquidations totalFeesCollected
         } }`,
       );
@@ -32,7 +56,7 @@ export function useSubgraphPools() {
     queryKey: ['sg', 'pools'],
     queryFn: async () => {
       const data = await querySubgraph<{ pools: SubgraphPool[] }>(
-        `{ pools(orderBy: symbol) { id address borrowAsset symbol decimals totalSupply } }`,
+        `{ pools(orderBy: symbol, subgraphError: allow) { id address borrowAsset symbol decimals totalSupply } }`,
       );
       return data.pools;
     },
@@ -46,7 +70,7 @@ export function useCollateralTypes() {
     queryKey: ['sg', 'collateralTypes'],
     queryFn: async () => {
       const data = await querySubgraph<{ collateralTypes: SubgraphCollateralType[] }>(
-        `{ collateralTypes(where: { enabled: true }, orderBy: lpType) {
+        `{ collateralTypes(where: { enabled: true }, orderBy: lpType, subgraphError: allow) {
             id lpType maxLtv liquidationThreshold liquidationBonus borrowCap enabled currentBorrows
         } }`,
       );
@@ -64,7 +88,7 @@ export function useSupplyPositions(user?: string) {
       if (!user) return [] as SubgraphSupplyPosition[];
       const data = await querySubgraph<{ supplyPositions: SubgraphSupplyPosition[] }>(
         `query Supplies($user: Bytes) {
-          supplyPositions(where: { user: $user }) {
+          supplyPositions(where: { user: $user }, subgraphError: allow) {
             id user shares suppliedAmount
             pool { id address symbol decimals borrowAsset }
           }
@@ -89,9 +113,9 @@ export function useSubgraphPositions(owner?: string) {
       // an operation that declares a variable it never uses.
       const query = owner
         ? `query Positions($owner: Bytes) {
-            positions(where: { owner: $owner }, orderBy: depositTimestamp, orderDirection: desc) { ${POSITION_FIELDS} }
+            positions(where: { owner: $owner }, orderBy: depositTimestamp, orderDirection: desc, subgraphError: allow) { ${POSITION_FIELDS} }
           }`
-        : `{ positions(orderBy: depositTimestamp, orderDirection: desc) { ${POSITION_FIELDS} } }`;
+        : `{ positions(orderBy: depositTimestamp, orderDirection: desc, subgraphError: allow) { ${POSITION_FIELDS} } }`;
       const data = await querySubgraph<{ positions: SubgraphPosition[] }>(
         query,
         owner ? { owner: owner.toLowerCase() } : undefined,
