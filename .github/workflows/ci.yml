@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The interface does not compile without src/generated, and that is produced from core:
+      # the ABIs it type-checks every contract call against come out of core's forge output.
+      # Checking out and compiling core is therefore not optional here — it is what makes this
+      # job able to catch an interface that has drifted from the contracts.
+      - name: Check out koreth-v1-core
+        uses: actions/checkout@v4
+        with:
+          repository: korethlabs/koreth-v1-core
+          token: ${{ secrets.CORE_TOKEN }}
+          submodules: recursive
+          path: core
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # via-IR compilation is memory-hungry and the 2-core/7GB runner OOMs without headroom.
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+
+      - name: Cache core build
+        uses: actions/cache@v4
+        with:
+          path: |
+            core/out
+            core/cache
+          key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}
+          restore-keys: core-${{ runner.os }}-
+
+      - name: Build core
+        working-directory: core
+        run: forge build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Addresses come from a deployment that only exists on a running chain, so CI synthesizes
+      # them; the ABIs above are real. See scripts/stub-core-deployment.mjs for why that is enough.
+      - name: Generate src/generated
+        env:
+          CORE_ROOT: ${{ github.workspace }}/core
+        run: |
+          node scripts/stub-core-deployment.mjs
+          npm run prepare-frontend
+
+      # Reported separately from the build because a type error against a changed ABI is the
+      # failure this job exists to catch, and it reads far better on its own than buried in
+      # next build's output.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
