@@ -8,7 +8,7 @@
 import {readFileSync, writeFileSync, mkdirSync} from "node:fs";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
-import {ABI_ARTIFACTS, DEPLOYMENT_KEYS} from "./core-artifacts.mjs";
+import {ABI_ARTIFACTS, DEPLOYMENT_KEYS, NUMERIC_KEYS} from "./core-artifacts.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const feRoot = join(here, "..");
@@ -21,9 +21,18 @@ const dep = JSON.parse(readFileSync(join(contractsRoot, "deployments", "local.js
 mkdirSync(genDir, {recursive: true});
 
 // --- deployments.ts ---
+// Quoting follows NUMERIC_KEYS rather than the runtime type, so the emitted types are a
+// property of this repo and not of however local.json happened to be serialized — a chainId
+// that arrived as "1337" would otherwise silently become a string the whole app compares against.
 const entries = DEPLOYMENT_KEYS
     .filter((k) => dep[k] !== undefined)
-    .map((k) => `  ${k}: ${typeof dep[k] === "number" ? dep[k] : `"${dep[k]}"`},`)
+    .map((k) => {
+        const numeric = NUMERIC_KEYS.has(k);
+        if (numeric !== (typeof dep[k] === "number")) {
+            throw new Error(`local.json: ${k} should be ${numeric ? "a number" : "a string"}, got ${typeof dep[k]}`);
+        }
+        return `  ${k}: ${numeric ? dep[k] : `"${dep[k]}"`},`;
+    })
     .join("\n");
 writeFileSync(
     join(genDir, "deployments.ts"),
