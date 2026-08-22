@@ -54,6 +54,9 @@ export function borrowingCapacityUsd(
   config: CollateralConfig | undefined,
 ): bigint | undefined {
   if (collateralUsd === undefined || config === undefined) return undefined;
+  // A suspended collateral type has no capacity to report: deposit() requires `enabled`, so the
+  // haircut-and-LTV figure would advertise a borrow the deposit itself would revert on.
+  if (!config.enabled) return undefined;
   const discounted = (collateralUsd * (BPS - config.haircut)) / BPS;
   return (discounted * config.maxLtv) / BPS;
 }
@@ -74,12 +77,18 @@ export function borrowingCapacityUsd(
  *
  * which needs only figures this page has already read. Debt-free positions return undefined:
  * getHealthFactor answers uint256.max there, and dividing by zero debt has no meaning.
+ *
+ * Both inputs are optional on purpose. getMaxBorrow reverts when the oracle is down, and a debt
+ * read can still be in flight — coalescing either to zero turns a missing read into a health
+ * factor of 0.00, or into a reassuring one that understates the risk of a position that does
+ * carry debt.
  */
 export function projectedHealthFactor(
-  totalDebt: bigint,
-  maxBorrow: bigint,
+  totalDebt: bigint | undefined,
+  maxBorrow: bigint | undefined,
   config: CollateralConfig | undefined,
 ): bigint | undefined {
-  if (config === undefined || config.maxLtv === 0n || totalDebt === 0n) return undefined;
+  if (config === undefined || maxBorrow === undefined || totalDebt === undefined) return undefined;
+  if (config.maxLtv === 0n || totalDebt === 0n) return undefined;
   return (config.liquidationThreshold * maxBorrow * 10n ** 18n) / (config.maxLtv * totalDebt);
 }

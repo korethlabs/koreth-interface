@@ -279,12 +279,15 @@ function DepositV2Card({
             onDone();
           }}
         />
-        {/* The whole balance goes in, so there is no amount to choose. withdraw() takes no amount
-            either — a position is unlocked in full or not at all — so a partial deposit would only
-            offer control on the way in that the protocol cannot give back on the way out. */}
+        {/* No amount to choose: the whole balance goes in as one position. withdraw() takes no
+            amount and requires the position's debt to be zero, so what a partial deposit would
+            really buy is the option to split the LP across positions and exit one of them while
+            the other keeps borrowing. That is a portfolio decision, not a deposit-form decision,
+            and putting it behind an LP-denominated input — a field that reads 0.000084 for a
+            five-figure balance — asks for it in the one unit the user cannot reason about. */}
         <p className="text-xs text-[var(--muted)]">
-          Deposits your entire LP balance. Positions are withdrawn in full, so they are deposited in
-          full — you can open another one at any time.
+          Deposits your whole LP balance as a single position. You can withdraw it once the
+          position&apos;s debt is fully repaid.
         </p>
       </div>
     </div>
@@ -518,10 +521,14 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const config = useCollateralConfig(pos?.lpType);
   const cooldown = useBorrowCooldown(pos?.depositBlock);
 
-  const debtBn = (debt as bigint) ?? 0n;
+  // Kept optional as well as coalesced: a zero is the right thing to disable the button on, but
+  // the wrong thing to compute a health factor from — see projectedHealthFactor.
+  const debtRaw = debt as bigint | undefined;
+  const capacityRaw = maxBorrow as bigint | undefined;
+  const debtBn = debtRaw ?? 0n;
   // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
   // checks `currentDebt + amount <= maxBorrow`, so existing debt has to come off it first.
-  const capacity = (maxBorrow as bigint) ?? 0n;
+  const capacity = capacityRaw ?? 0n;
   const headroom = capacity > debtBn ? capacity - debtBn : 0n;
   // borrow() re-derives both sides of the check at execution: it accrues interest first, so the
   // debt is larger than the one read here, and it re-prices the LP through the oracle, so the
@@ -532,7 +539,8 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const parsed = parseAmount(amount, decimals);
   const valid = parsed > 0n && parsed <= available;
   const hf = health as bigint | undefined;
-  const projected = parsed > 0n ? projectedHealthFactor(debtBn + parsed, capacity, config) : undefined;
+  const projected =
+    parsed > 0n && debtRaw !== undefined ? projectedHealthFactor(debtRaw + parsed, capacityRaw, config) : undefined;
   // Borrowing is capped at maxLtv, so no single borrow can push the health factor to the
   // liquidation line — what it does is decide how far the LP can fall before it gets there.
   // Below this the drop that would liquidate the position is small enough to be worth an explicit
