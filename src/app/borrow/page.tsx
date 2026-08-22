@@ -7,7 +7,7 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
-import {borrowingCapacityUsd, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {isPositionOpen, type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -21,6 +21,12 @@ const LP_COLOR = '#8b93ff';
 
 /** Share of a position's borrowing capacity the interface offers, in bps. See `available` below. */
 const BORROW_HEADROOM_BPS = 9_900n;
+
+/**
+ * Health factor below which a borrow has to be acknowledged explicitly. Matches the threshold
+ * this page already paints as a warning, so the colour and the checkbox agree on what is risky.
+ */
+const RISK_ACK_HEALTH_FACTOR = 15n * 10n ** 17n;
 
 // Quote tokens whose WETH V3 pool is whitelisted as collateral on-chain. Only pairs listed here are
 // shown as depositable: deposit() reverts COLLATERAL_NOT_ENABLED for a pool ProtocolCore hasn't
@@ -471,8 +477,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
  * `ready` is false while any of the three reads is still in flight — an unknown cooldown is
  * treated as not elapsed, so the button is never enabled on an assumption.
  */
-function useBorrowCooldown(positionId: bigint): {ready: boolean; blocksLeft: bigint | undefined} {
-  const {data: depositBlock} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getDepositBlock', args: [positionId]});
+function useBorrowCooldown(depositBlock: bigint | undefined): {ready: boolean; blocksLeft: bigint | undefined} {
   const {data: cooldownBlocks} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'borrowCooldownBlocks'});
   const {data: blockNumber} = useBlockNumber({watch: true});
 
@@ -480,13 +485,14 @@ function useBorrowCooldown(positionId: bigint): {ready: boolean; blocksLeft: big
     return {ready: false, blocksLeft: undefined};
   }
   // The contract's check is strict, so the first block that satisfies it is one past the sum.
-  const readyAt = (depositBlock as bigint) + (cooldownBlocks as bigint) + 1n;
+  const readyAt = depositBlock + (cooldownBlocks as bigint) + 1n;
   if (blockNumber >= readyAt) return {ready: true, blocksLeft: 0n};
   return {ready: false, blocksLeft: readyAt - blockNumber};
 }
 
 function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onDone: () => void}) {
   const [amount, setAmount] = useState('');
+  const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
 
@@ -494,7 +500,12 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
   const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
   const collateral = usePositionValue(id);
-  const cooldown = useBorrowCooldown(id);
+  // The LP type comes off the position itself rather than from the subgraph's label, so the risk
+  // parameters shown are keyed to what the protocol recorded rather than to a name match.
+  const {data: onChainPosition} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getPosition', args: [id]});
+  const pos = onChainPosition as {lpType: number; depositBlock: bigint} | undefined;
+  const config = useCollateralConfig(pos?.lpType);
+  const cooldown = useBorrowCooldown(pos?.depositBlock);
 
   const debtBn = (debt as bigint) ?? 0n;
   // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
@@ -510,6 +521,12 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const parsed = parseAmount(amount, decimals);
   const valid = parsed > 0n && parsed <= available;
   const hf = health as bigint | undefined;
+  const projected = parsed > 0n ? projectedHealthFactor(debtBn + parsed, capacity, config) : undefined;
+  // Borrowing is capped at maxLtv, so no single borrow can push the health factor to the
+  // liquidation line — what it does is decide how far the LP can fall before it gets there.
+  // Below this the drop that would liquidate the position is small enough to be worth an explicit
+  // acknowledgement rather than a colour change, the pattern Aave uses for the same decision.
+  const needsAck = projected !== undefined && projected < RISK_ACK_HEALTH_FACTOR;
 
   return (
     <div className="card card-hover p-5 space-y-4">
@@ -523,7 +540,19 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         </div>
         <div className="text-right">
           <p className="text-xs text-[var(--muted)]">Health</p>
-          <p className={`text-xl font-semibold tabular-nums leading-tight ${healthColor(hf)}`}>{formatHealth(hf)}</p>
+          {/* The projected value sits next to the current one rather than replacing it: the
+              question being asked is how much this borrow moves the number, which a single
+              figure cannot answer. */}
+          <p className="text-xl font-semibold tabular-nums leading-tight">
+            <span className={healthColor(hf)}>{formatHealth(hf)}</span>
+            {projected !== undefined && (
+              <>
+                <span className="text-[var(--muted)]"> → </span>
+                <span className={healthColor(projected)}>{formatHealth(projected)}</span>
+              </>
+            )}
+          </p>
+          <p className="text-xs text-[var(--muted)]">Liquidation below 1.00</p>
         </div>
       </div>
 
@@ -555,6 +584,16 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
           <span>Borrow {symbol}</span>
           <button onClick={() => setAmount(formatUnits(available, decimals))} className="hover:text-[var(--foreground)]">Max</button>
         </div>
+        {needsAck && (
+          <label className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/40 p-3 text-xs text-[var(--muted-strong)]">
+            <input type="checkbox" checked={ackRisk} onChange={(e) => setAckRisk(e.target.checked)} className="mt-0.5" />
+            <span>
+              This leaves little room before liquidation: a fall in the value of your LP would put
+              the position below 1.00 and let anyone repay your debt in exchange for the collateral.
+              I understand the risk.
+            </span>
+          </label>
+        )}
         <div className="flex gap-2">
           <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" inputMode="decimal" className="input flex-1 p-2.5" />
           <TxButton
@@ -563,9 +602,10 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             functionName="borrow"
             args={[id, parsed]}
             label="Borrow"
-            disabled={!valid || !cooldown.ready}
+            disabled={!valid || !cooldown.ready || (needsAck && !ackRisk)}
             onConfirmed={() => {
               setAmount('');
+              setAckRisk(false);
               refetchDebt();
               refetchHealth();
               refetchMax();

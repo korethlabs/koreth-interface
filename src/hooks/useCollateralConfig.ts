@@ -29,14 +29,14 @@ export function useRiskManager(): `0x${string}` | undefined {
 }
 
 /** Risk parameters for one collateral type, or undefined until they have been read. */
-export function useCollateralConfig(lpType: number): CollateralConfig | undefined {
+export function useCollateralConfig(lpType: number | undefined): CollateralConfig | undefined {
   const riskManager = useRiskManager();
   const {data} = useReadContract({
     address: riskManager,
     abi: riskManagerAbi,
     functionName: 'getCollateralConfig',
-    args: [lpType],
-    query: {enabled: !!riskManager},
+    args: lpType === undefined ? undefined : [lpType],
+    query: {enabled: !!riskManager && lpType !== undefined},
   });
   return data as CollateralConfig | undefined;
 }
@@ -56,4 +56,30 @@ export function borrowingCapacityUsd(
   if (collateralUsd === undefined || config === undefined) return undefined;
   const discounted = (collateralUsd * (BPS - config.haircut)) / BPS;
   return (discounted * config.maxLtv) / BPS;
+}
+
+/**
+ * The health factor a position would have carrying `totalDebt` of its borrow asset.
+ *
+ * Derived from getMaxBorrow rather than by converting the debt to USD, which would mean a second
+ * price feed read and a second chance to disagree with the contracts. Both sides of the contract's
+ * formula share the same collateral value and the same USD conversion, and both are linear in the
+ * amount, so those factors cancel:
+ *
+ *   getHealthFactor  = collateralAfterHaircut × liquidationThreshold / debtUsd
+ *   getMaxBorrow     = collateralAfterHaircut × maxLtv / borrowAssetPrice
+ *   debtUsd          = totalDebt × borrowAssetPrice
+ *
+ *   ⇒ healthFactor   = (liquidationThreshold / maxLtv) × (maxBorrow / totalDebt)
+ *
+ * which needs only figures this page has already read. Debt-free positions return undefined:
+ * getHealthFactor answers uint256.max there, and dividing by zero debt has no meaning.
+ */
+export function projectedHealthFactor(
+  totalDebt: bigint,
+  maxBorrow: bigint,
+  config: CollateralConfig | undefined,
+): bigint | undefined {
+  if (config === undefined || config.maxLtv === 0n || totalDebt === 0n) return undefined;
+  return (config.liquidationThreshold * maxBorrow * 10n ** 18n) / (config.maxLtv * totalDebt);
 }
