@@ -13,6 +13,7 @@ jobs:
   build:
     name: typecheck + build
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -28,10 +29,16 @@ jobs:
           submodules: recursive
           path: core
 
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: stable
+      # On the current runner image /mnt is not a separate disk — it lives on the root
+      # filesystem, which ships ~98% full. The 12G swapfile below therefore lands on / and left
+      # only ~1.5G free, so npm ci filled the disk and the runner agent (which also writes to /)
+      # was killed mid-step with its logs lost. Reclaim the big unused toolchains first so both
+      # the swapfile and the install have room.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
 
       # via-IR compilation is memory-hungry and the 2-core/7GB runner OOMs without headroom.
       - name: Add swap space
@@ -40,6 +47,20 @@ jobs:
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
+
+      # Node deps are installed before the core build so the cheap step fails fast, and so a
+      # failure here is isolated from the memory-heavy forge build that follows.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
 
       - name: Cache core build
         uses: actions/cache@v4
@@ -50,16 +71,12 @@ jobs:
           key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}
           restore-keys: core-${{ runner.os }}-
 
+      # --threads 1 serializes solc so only one via-IR unit is resident at a time, capping peak
+      # memory on the small 2-core runner during a cold full rebuild. Trades build time for
+      # headroom; warm-cache runs skip the rebuild entirely.
       - name: Build core
         working-directory: core
-        run: forge build
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
+        run: forge build --threads 1
 
       # Addresses come from a deployment that only exists on a running chain, so CI synthesizes
       # them; the ABIs above are real. See scripts/stub-core-deployment.mjs for why that is enough.
