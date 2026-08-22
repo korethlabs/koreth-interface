@@ -13,6 +13,7 @@ jobs:
   build:
     name: typecheck + build
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -28,11 +29,6 @@ jobs:
           submodules: recursive
           path: core
 
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: stable
-
       # via-IR compilation is memory-hungry and the 2-core/7GB runner OOMs without headroom.
       - name: Add swap space
         run: |
@@ -40,6 +36,28 @@ jobs:
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
+
+      # Node deps are installed before the core build so the cheap step fails fast, and so a
+      # failure here is isolated from the memory-heavy forge build that follows.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resource snapshot (pre npm ci)
+        run: |
+          echo "## nproc"; nproc
+          echo "## free -h"; free -h
+          echo "## swapon"; swapon --show || true
+          echo "## df -h /"; df -h /
+          echo "## df -h /mnt"; df -h /mnt || true
+
+      - run: npm ci
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
 
       - name: Cache core build
         uses: actions/cache@v4
@@ -52,19 +70,11 @@ jobs:
 
       # --threads 1 serializes solc so only one via-IR unit is in memory at a time. On the
       # 2-core runner the default runs two units in parallel and, on a cold cache (full rebuild),
-      # their combined peak exhausts RAM+swap and OOM-kills the runner mid-job — which then takes
-      # out the next step (npm ci) and drops the logs. Serializing trades build time for the
-      # headroom that keeps the cold path alive; warm-cache runs skip most of the work anyway.
+      # their combined peak exhausts RAM+swap and OOM-kills the runner mid-job. Serializing trades
+      # build time for the headroom that keeps the cold path alive; warm-cache runs skip the work.
       - name: Build core
         working-directory: core
         run: forge build --threads 1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
 
       # Addresses come from a deployment that only exists on a running chain, so CI synthesizes
       # them; the ABIs above are real. See scripts/stub-core-deployment.mjs for why that is enough.
