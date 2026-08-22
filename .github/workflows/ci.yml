@@ -55,24 +55,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Resource snapshot (pre npm ci)
-        run: |
-          { echo "## nproc"; nproc
-            echo "## free -h"; free -h
-            echo "## swapon"; swapon --show || true
-            echo "## df -h /"; df -h /
-            echo "## df -h /mnt"; df -h /mnt || true
-            echo "## npm/node"; node -v; npm -v
-          } | tee diag.txt
-
-      # Uploaded before npm ci so it survives even when the runner is hard-killed during install
-      # (step logs are lost in that case, but artifacts use separate storage).
-      - name: Upload diagnostics
-        uses: actions/upload-artifact@v4
-        with:
-          name: preinstall-diag
-          path: diag.txt
-
       - run: npm ci
 
       - name: Install Foundry
@@ -89,10 +71,9 @@ jobs:
           key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}
           restore-keys: core-${{ runner.os }}-
 
-      # --threads 1 serializes solc so only one via-IR unit is in memory at a time. On the
-      # 2-core runner the default runs two units in parallel and, on a cold cache (full rebuild),
-      # their combined peak exhausts RAM+swap and OOM-kills the runner mid-job. Serializing trades
-      # build time for the headroom that keeps the cold path alive; warm-cache runs skip the work.
+      # --threads 1 serializes solc so only one via-IR unit is resident at a time, capping peak
+      # memory on the small 2-core runner during a cold full rebuild. Trades build time for
+      # headroom; warm-cache runs skip the rebuild entirely.
       - name: Build core
         working-directory: core
         run: forge build --threads 1
