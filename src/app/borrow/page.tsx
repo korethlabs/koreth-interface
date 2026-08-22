@@ -4,7 +4,7 @@ import {useEffect, useMemo, useState} from 'react';
 import {useAccount, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
@@ -32,6 +32,50 @@ function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean 
   const b = token1.toLowerCase();
   if (a !== weth && b !== weth) return false;
   return V3_ELIGIBLE_QUOTES.includes(a === weth ? b : a);
+}
+
+// ILPAdapter.LPType, the discriminator LPOracleHub routes on to pick the per-protocol oracle.
+const LP_TYPE_V2 = 0;
+const LP_TYPE_V3 = 1;
+
+// LPOracleHub prices in USD with 18 decimals, regardless of the collateral's own decimals.
+const USD_DECIMALS = 18;
+
+// The hub is read off PositionManager rather than from deployments.json so the price shown is by
+// construction the one the protocol will use: PositionManager.getPositionValue asks this same hub,
+// and getHealthFactor is computed from that. A hub address configured separately in the frontend
+// could drift from the one the contracts actually consult.
+function useOracleHub(): `0x${string}` | undefined {
+  const {data} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'oracleHub'});
+  return data as `0x${string}` | undefined;
+}
+
+// getRawPrice takes the amount as an argument instead of reading a stored position, which is what
+// lets it value collateral that is still in the wallet — PositionManager.getPositionValue only
+// works once a position exists. tokenId is ignored for V2, amount is ignored for V3.
+function useLpUsdValue(lpToken: `0x${string}` | undefined, tokenId: bigint, amount: bigint, lpType: number) {
+  const hub = useOracleHub();
+  const {data, isError} = useReadContract({
+    address: hub,
+    abi: lpOracleHubAbi,
+    functionName: 'getRawPrice',
+    args: lpToken ? [lpToken, tokenId, amount, lpType] : undefined,
+    query: {enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n)},
+  });
+  return {value: data as bigint | undefined, isError};
+}
+
+function formatUsd(v: bigint): string {
+  return `$${fmt(Number(formatUnits(v, USD_DECIMALS)))}`;
+}
+
+// The oracle reverts instead of returning a stale figure when a Chainlink feed is down, so a failed
+// read is rendered as unavailable. Substituting a fallback — spot reserves, or zero — would state a
+// collateral value the protocol would refuse to credit.
+function UsdValue({value, isError, className = ''}: {value: bigint | undefined; isError: boolean; className?: string}) {
+  if (isError) return <span className={`text-[var(--muted)] ${className}`}>price unavailable</span>;
+  if (value === undefined) return <span className={`text-[var(--muted)] ${className}`}>—</span>;
+  return <span className={className}>≈ {formatUsd(value)}</span>;
 }
 
 function parseAmount(v: string, decimals: number): bigint {
@@ -200,6 +244,7 @@ function DepositV2Card({
   const parsed = parseAmount(amount, LP_DECIMALS);
   const balance = (lpBalance as bigint) ?? 0n;
   const valid = parsed > 0n && parsed <= balance && borrowAsset !== '';
+  const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
 
   return (
     <div className="card p-5 space-y-4">
@@ -214,10 +259,17 @@ function DepositV2Card({
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       <div className="space-y-2">
+        {/* The raw LP count leads with its USD value and is demoted to the line below. A WETH/USDC
+            LP balance reads as ~0.000086 because the pair's total supply is the geometric mean of a
+            6- and an 18-decimal reserve, so a five-figure position looks like dust. Max still fills
+            the input with the full-precision balance: rounding it would strand the remainder. */}
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
           <span>LP balance</span>
+          <UsdValue value={lpUsd} isError={lpUsdError} className="text-sm text-[var(--foreground)]" />
+        </div>
+        <div className="flex justify-end text-xs text-[var(--muted)]">
           <button onClick={() => setAmount(formatUnits(balance, LP_DECIMALS))} className="hover:text-[var(--foreground)]">
-            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} · Max
+            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP · Max
           </button>
         </div>
         <div className="flex gap-2">
@@ -298,6 +350,20 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
     args: [owner, deployments.v3Adapter],
   });
 
+  // Batched rather than one useLpUsdValue per row: the rows are rendered from a single list, and a
+  // hook per row would both multiply the RPC round-trips and make the count vary between renders.
+  // The V3 oracle keys off the NFT manager address and tokenId, so amount is passed as 0.
+  const hub = useOracleHub();
+  const {data: valueResults} = useReadContracts({
+    contracts: eligible.map(({id}) => ({
+      address: hub as `0x${string}`,
+      abi: lpOracleHubAbi,
+      functionName: 'getRawPrice' as const,
+      args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
+    })),
+    query: {enabled: !!hub && eligible.length > 0},
+  });
+
   return (
     <div className="card p-5 space-y-4">
       <div className="flex items-center gap-3">
@@ -333,12 +399,14 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
             </div>
           )}
           <div>
-            {eligible.map(({id, token0, token1}) => (
+            {eligible.map(({id, token0, token1}, i) => (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
-                  <p className="text-sm leading-tight">NFT #{id.toString()}</p>
+                  <p className="text-sm leading-tight">
+                    <UsdValue value={valueResults?.[i]?.result as bigint | undefined} isError={valueResults?.[i]?.status === 'failure'} />
+                  </p>
                   <p className="text-xs text-[var(--muted)]">
-                    {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
+                    NFT #{id.toString()} · {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
                   </p>
                 </div>
                 <TxButton
