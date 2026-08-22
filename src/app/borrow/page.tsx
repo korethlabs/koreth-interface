@@ -10,10 +10,29 @@ import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
+import {tokenInfo} from '@/lib/tokens';
 import {V3_NFT_MANAGER, V3_FEE, nftManagerAbi} from '@/lib/v3';
 
 const LP_DECIMALS = 18;
 const LP_COLOR = '#8b93ff';
+
+// Quote tokens whose WETH V3 pool is whitelisted as collateral on-chain. Only pairs listed here are
+// shown as depositable: deposit() reverts COLLATERAL_NOT_ENABLED for a pool ProtocolCore hasn't
+// whitelisted, so this list must track the on-chain whitelist. To add WETH/DAI or WETH/USDT, first
+// whitelist their pools in ProtocolCore AND register their USD feeds in PriceFeedRegistry, then add
+// the token address here (e.g. deployments.dai, deployments.usdt).
+const V3_ELIGIBLE_QUOTES: string[] = [deployments.usdc.toLowerCase()];
+
+// A V3 NFT is depositable when it is a WETH/<eligible-quote> pool at the whitelisted fee tier.
+// Uniswap orders token0 < token1 by address, so WETH can be on either side.
+function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean {
+  if (fee !== V3_FEE) return false;
+  const weth = deployments.weth.toLowerCase();
+  const a = token0.toLowerCase();
+  const b = token1.toLowerCase();
+  if (a !== weth && b !== weth) return false;
+  return V3_ELIGIBLE_QUOTES.includes(a === weth ? b : a);
+}
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -263,17 +282,14 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
     })),
     query: {enabled: tokenIds.length > 0},
   });
-  const eligible = tokenIds.filter((_, i) => {
-    const p = posResults?.[i]?.result as V3PositionResult | undefined;
-    if (!p) return false;
-    const [, , token0, token1, fee, , , liquidity] = p;
-    return (
-      token0?.toLowerCase() === deployments.usdc.toLowerCase() &&
-      token1?.toLowerCase() === deployments.weth.toLowerCase() &&
-      Number(fee) === V3_FEE &&
-      liquidity > 0n
-    );
-  });
+  const eligible = tokenIds
+    .map((id, i) => ({id, p: posResults?.[i]?.result as V3PositionResult | undefined}))
+    .filter((e): e is {id: bigint; p: V3PositionResult} => {
+      if (!e.p) return false;
+      const [, , token0, token1, fee, , , liquidity] = e.p;
+      return isEligibleV3Pair(token0, token1, Number(fee)) && liquidity > 0n;
+    })
+    .map(({id, p}) => ({id, token0: p[2], token1: p[3]}));
 
   const {data: approvedAll, refetch: refetchApproval} = useReadContract({
     address: V3_NFT_MANAGER,
@@ -295,38 +311,51 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       {eligible.length === 0 ? (
-        <p className="text-sm text-[var(--muted)]">No WETH/USDC V3 positions — get one from the Faucet.</p>
-      ) : !approvedAll ? (
-        <div className="space-y-2">
-          <p className="text-sm text-[var(--muted-strong)]">One-time approval to let Koreth custody your V3 NFTs.</p>
-          <TxButton
-            address={V3_NFT_MANAGER}
-            abi={nftManagerAbi}
-            functionName="setApprovalForAll"
-            args={[deployments.v3Adapter, true]}
-            label="Approve V3 positions"
-            onConfirmed={() => refetchApproval()}
-          />
-        </div>
+        <p className="text-sm text-[var(--muted)]">No eligible V3 positions — get one from the Faucet.</p>
       ) : (
-        <div>
-          {eligible.map((id) => (
-            <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
-              <span className="text-sm">NFT #{id.toString()}</span>
+        <div className="space-y-3">
+          {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
+              shown first so the user can review which NFTs they'll be depositing before granting
+              custody. Deposit buttons stay disabled until the one-time approval is confirmed. */}
+          {!approvedAll && (
+            <div className="rounded-lg border border-[var(--border)] p-3 space-y-2">
+              <p className="text-sm text-[var(--muted-strong)]">
+                One-time approval to let Koreth custody your V3 NFTs. Review your positions below first.
+              </p>
               <TxButton
-                address={deployments.positionManager}
-                abi={positionManagerAbi}
-                functionName="deposit"
-                args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
-                label="Deposit"
-                disabled={borrowAsset === ''}
-                onConfirmed={() => {
-                  refetchCount();
-                  onDone();
-                }}
+                address={V3_NFT_MANAGER}
+                abi={nftManagerAbi}
+                functionName="setApprovalForAll"
+                args={[deployments.v3Adapter, true]}
+                label="Approve V3 positions"
+                onConfirmed={() => refetchApproval()}
               />
             </div>
-          ))}
+          )}
+          <div>
+            {eligible.map(({id, token0, token1}) => (
+              <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
+                <div>
+                  <p className="text-sm leading-tight">NFT #{id.toString()}</p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
+                  </p>
+                </div>
+                <TxButton
+                  address={deployments.positionManager}
+                  abi={positionManagerAbi}
+                  functionName="deposit"
+                  args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
+                  label="Deposit"
+                  disabled={borrowAsset === '' || !approvedAll}
+                  onConfirmed={() => {
+                    refetchCount();
+                    onDone();
+                  }}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

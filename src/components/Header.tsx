@@ -3,10 +3,6 @@
 import Link from 'next/link';
 import {usePathname} from 'next/navigation';
 import {ConnectKitButton} from 'connectkit';
-import {useAccount, useReadContract} from 'wagmi';
-import {erc20Abi, formatUnits} from 'viem';
-import {deployments} from '@/generated/deployments';
-import {korethLocal} from '@/lib/chain';
 
 const NAV = [
   {href: '/', label: 'Dashboard'},
@@ -19,15 +15,6 @@ const NAV = [
 
 export function Header() {
   const pathname = usePathname();
-  const {address, isConnected, chainId} = useAccount();
-  const wrongChain = !isConnected || chainId !== korethLocal.id;
-  const {data: usdcBal} = useReadContract({
-    address: deployments.usdc,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: {enabled: isConnected && !!address && !wrongChain},
-  });
 
   return (
     <header className="sticky top-0 z-50 border-b border-[var(--border)] bg-[var(--background)]/70 backdrop-blur-xl">
@@ -50,11 +37,6 @@ export function Header() {
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          {isConnected && !wrongChain && usdcBal !== undefined && (
-            <span className="badge hidden sm:inline text-[var(--muted-strong)]">
-              {Number(formatUnits(usdcBal, 6)).toLocaleString('en-US', {maximumFractionDigits: 2})} USDC
-            </span>
-          )}
           <ConnectKitButton />
         </div>
       </div>
