@@ -7,6 +7,7 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
+import {borrowingCapacityUsd, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {isPositionOpen, type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -224,16 +225,15 @@ function DepositV2Card({
   pools: SubgraphPool[];
   onDone: () => void;
 }) {
-  const [amount, setAmount] = useState('');
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
 
   const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
   const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
-  const parsed = parseAmount(amount, LP_DECIMALS);
   const balance = (lpBalance as bigint) ?? 0n;
-  const valid = parsed > 0n && parsed <= balance && borrowAsset !== '';
   const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
+  const config = useCollateralConfig(LP_TYPE_V2);
+  const capacity = borrowingCapacityUsd(lpUsd, config);
 
   return (
     <div className="card p-5 space-y-4">
@@ -247,39 +247,69 @@ function DepositV2Card({
 
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
-      <div className="space-y-2">
-        {/* The raw LP count leads with its USD value and is demoted to the line below. A WETH/USDC
-            LP balance reads as ~0.000086 because the pair's total supply is the geometric mean of a
-            6- and an 18-decimal reserve, so a five-figure position looks like dust. Max still fills
-            the input with the full-precision balance: rounding it would strand the remainder. */}
-        <div className="flex items-center justify-between text-xs text-[var(--muted)]">
-          <span>LP balance</span>
-          <UsdValue value={lpUsd} isError={lpUsdError} className="text-sm text-[var(--foreground)]" />
+      <div className="space-y-3">
+        {/* The USD value leads and the raw LP count is demoted beneath it. A WETH/USDC LP balance
+            reads as ~0.000086 because the pair's total supply is the geometric mean of a 6- and an
+            18-decimal reserve, so a five-figure position looks like dust. The count stays visible
+            because it is what a block explorer or Uniswap will show for the same balance. */}
+        <div>
+          <p className="text-xs text-[var(--muted)]">Your LP balance</p>
+          <UsdValue value={lpUsd} isError={lpUsdError} className="text-2xl font-semibold tabular-nums" />
+          <p className="text-xs text-[var(--muted)] tabular-nums">
+            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP
+          </p>
         </div>
-        <div className="flex justify-end text-xs text-[var(--muted)]">
-          <button onClick={() => setAmount(formatUnits(balance, LP_DECIMALS))} className="hover:text-[var(--foreground)]">
-            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP · Max
-          </button>
-        </div>
-        <div className="flex gap-2">
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" inputMode="decimal" className="input flex-1 p-2.5" />
-          <ActionButton
-            approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
-            address={deployments.positionManager}
-            abi={positionManagerAbi}
-            functionName="deposit"
-            args={[deployments.v2Pair, 0n, parsed, borrowAsset]}
-            label="Deposit"
-            disabled={!valid}
-            onConfirmed={() => {
-              setAmount('');
-              refetchBalance();
-              refetchAllowance();
-              onDone();
-            }}
-          />
-        </div>
+
+        <BorrowingCapacity capacity={capacity} config={config} />
+
+        <ActionButton
+          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: (allowance as bigint) ?? 0n}}
+          address={deployments.positionManager}
+          abi={positionManagerAbi}
+          functionName="deposit"
+          args={[deployments.v2Pair, 0n, balance, borrowAsset]}
+          label="Deposit full balance"
+          disabled={balance === 0n || borrowAsset === ''}
+          onConfirmed={() => {
+            refetchBalance();
+            refetchAllowance();
+            onDone();
+          }}
+        />
+        {/* The whole balance goes in, so there is no amount to choose. withdraw() takes no amount
+            either — a position is unlocked in full or not at all — so a partial deposit would only
+            offer control on the way in that the protocol cannot give back on the way out. */}
+        <p className="text-xs text-[var(--muted)]">
+          Deposits your entire LP balance. Positions are withdrawn in full, so they are deposited in
+          full — you can open another one at any time.
+        </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the protocol would lend against a given amount of collateral, shown before the deposit so
+ * the user can decide whether it is worth locking the LP up at all — the question every lending
+ * interface answers up front, and the one this page previously answered only after the deposit.
+ */
+function BorrowingCapacity({capacity, config}: {capacity: bigint | undefined; config: CollateralConfig | undefined}) {
+  return (
+    <div className="flex items-baseline justify-between rounded-lg border border-[var(--border)] px-3 py-2">
+      <div>
+        <p className="text-xs text-[var(--muted)]">You could borrow up to</p>
+        {config && !config.enabled ? (
+          <p className="text-sm text-[var(--muted)]">not accepted as collateral right now</p>
+        ) : (
+          <UsdValue value={capacity} isError={false} approx={false} maximumFractionDigits={0} className="text-lg font-semibold tabular-nums" />
+        )}
+      </div>
+      {config?.enabled && (
+        <p className="text-xs text-[var(--muted)]">
+          {Number(config.maxLtv) / 100}% LTV
+          {config.haircut > 0n && ` · ${Number(config.haircut) / 100}% haircut`}
+        </p>
+      )}
     </div>
   );
 }
@@ -354,6 +384,8 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
       : [],
     query: {enabled: !!hub && eligible.length > 0},
   });
+  // One config for every row: the risk parameters are per LP type, not per NFT.
+  const config = useCollateralConfig(LP_TYPE_V3);
 
   return (
     <div className="card p-5 space-y-4">
@@ -393,11 +425,20 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
             {eligible.map(({id, token0, token1}, i) => (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
-                  <p className="text-sm leading-tight">
+                  <p className="text-sm leading-tight font-semibold">
                     <UsdValue value={valueResults?.[i]?.result as bigint | undefined} isError={valueResults?.[i]?.status === 'failure'} />
                   </p>
                   <p className="text-xs text-[var(--muted)]">
                     NFT #{id.toString()} · {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    Borrow up to{' '}
+                    <UsdValue
+                      value={borrowingCapacityUsd(valueResults?.[i]?.result as bigint | undefined, config)}
+                      isError={false}
+                      approx={false}
+                      maximumFractionDigits={0}
+                    />
                   </p>
                 </div>
                 <TxButton
