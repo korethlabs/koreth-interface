@@ -1,7 +1,7 @@
 'use client';
 
 import {useEffect, useMemo, useState} from 'react';
-import {useAccount, useReadContract, useReadContracts} from 'wagmi';
+import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
@@ -418,6 +418,29 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
   );
 }
 
+/**
+ * borrow() requires `block.number > depositBlock + borrowCooldownBlocks`: an anti-manipulation
+ * delay that makes depositing and borrowing in the same block impossible. Until it elapses the
+ * Borrow button reverted BORROW_COOLDOWN with nothing on screen to explain the failure, which
+ * reads as a broken protocol rather than as a deliberate wait.
+ *
+ * `ready` is false while any of the three reads is still in flight — an unknown cooldown is
+ * treated as not elapsed, so the button is never enabled on an assumption.
+ */
+function useBorrowCooldown(positionId: bigint): {ready: boolean; blocksLeft: bigint | undefined} {
+  const {data: depositBlock} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getDepositBlock', args: [positionId]});
+  const {data: cooldownBlocks} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'borrowCooldownBlocks'});
+  const {data: blockNumber} = useBlockNumber({watch: true});
+
+  if (depositBlock === undefined || cooldownBlocks === undefined || blockNumber === undefined) {
+    return {ready: false, blocksLeft: undefined};
+  }
+  // The contract's check is strict, so the first block that satisfies it is one past the sum.
+  const readyAt = (depositBlock as bigint) + (cooldownBlocks as bigint) + 1n;
+  if (blockNumber >= readyAt) return {ready: true, blocksLeft: 0n};
+  return {ready: false, blocksLeft: readyAt - blockNumber};
+}
+
 function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onDone: () => void}) {
   const [amount, setAmount] = useState('');
   const id = BigInt(position.id);
@@ -427,6 +450,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
   const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
   const collateral = usePositionValue(id);
+  const cooldown = useBorrowCooldown(id);
 
   const debtBn = (debt as bigint) ?? 0n;
   // getMaxBorrow is the position's total borrowing capacity, and borrow() checks
@@ -490,7 +514,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             functionName="borrow"
             args={[id, parsed]}
             label="Borrow"
-            disabled={!valid}
+            disabled={!valid || !cooldown.ready}
             onConfirmed={() => {
               setAmount('');
               refetchDebt();
@@ -500,6 +524,13 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             }}
           />
         </div>
+        {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
+          <p className="text-xs text-[var(--muted)]">
+            Borrowing unlocks in {cooldown.blocksLeft.toString()} block
+            {cooldown.blocksLeft === 1n ? '' : 's'} — a short delay after each deposit that stops a
+            single transaction from moving the price and borrowing against it.
+          </p>
+        )}
       </div>
     </div>
   );
