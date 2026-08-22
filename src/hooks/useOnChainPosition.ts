@@ -45,15 +45,22 @@ export function isOpenOnChain(position: OnChainPosition | undefined): boolean | 
  * Preferred over the subgraph's copy for anything that decides what the user is shown about their
  * collateral: the subgraph re-derives the LP type into a display string and can be several blocks
  * behind, while this is the record the protocol itself acts on.
+ *
+ * Returns its refetch because `status` lives in here: withdraw() changes it, and a page that
+ * refreshed only debt and health after a withdraw would keep gating on a cached `Active` and go on
+ * pricing an LP that is already back in the user's wallet.
  */
-export function useOnChainPosition(positionId: bigint): OnChainPosition | undefined {
-  const {data} = useReadContract({
+export function useOnChainPosition(positionId: bigint): {
+  position: OnChainPosition | undefined;
+  refetch: () => void;
+} {
+  const {data, refetch} = useReadContract({
     address: deployments.positionManager,
     abi: positionManagerAbi,
     functionName: 'getPosition',
     args: [positionId],
   });
-  return data as OnChainPosition | undefined;
+  return {position: data as OnChainPosition | undefined, refetch};
 }
 
 /**

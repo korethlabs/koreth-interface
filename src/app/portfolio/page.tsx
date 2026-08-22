@@ -148,7 +148,7 @@ function PositionCard({
     args: [owner, deployments.lendingEngine],
   });
   const collateral = usePositionValue(id);
-  const onChain = useOnChainPosition(id);
+  const {position: onChain, refetch: refetchOnChain} = useOnChainPosition(id);
 
   // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
   // model rate at the pool's current utilization. Shared across every collateral type now.
@@ -173,6 +173,9 @@ function PositionCard({
     refetchDebt();
     refetchHealth();
     refetchAllow();
+    // Includes the position record: withdraw() closes it, and the collateral cell gates on that
+    // status rather than on the subgraph's.
+    refetchOnChain();
     onDone();
   };
 

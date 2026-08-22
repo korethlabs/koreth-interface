@@ -263,7 +263,7 @@ function DepositV2Card({
           </p>
         </div>
 
-        <BorrowingCapacity capacity={capacity} config={config} />
+        <BorrowingCapacity capacity={capacity} isError={lpUsdError} config={config} />
 
         {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
             the cards come from a subgraph query that can lag the chain, so a collateral type can
@@ -310,7 +310,15 @@ function DepositV2Card({
  * which can bind first; folding those in means reading protocol-wide state that has nothing to do
  * with this position, so they are named rather than silently ignored.
  */
-function BorrowingCapacity({capacity, config}: {capacity: bigint | undefined; config: CollateralConfig | undefined}) {
+function BorrowingCapacity({
+  capacity,
+  isError,
+  config,
+}: {
+  capacity: bigint | undefined;
+  isError: boolean;
+  config: CollateralConfig | undefined;
+}) {
   return (
     <div className="flex items-baseline justify-between rounded-lg border border-[var(--border)] px-3 py-2">
       <div>
@@ -318,7 +326,9 @@ function BorrowingCapacity({capacity, config}: {capacity: bigint | undefined; co
         {config && !config.enabled ? (
           <p className="text-sm text-[var(--muted)]">not accepted as collateral right now</p>
         ) : (
-          <UsdValue value={capacity} isError={false} approx={false} maximumFractionDigits={0} className="text-lg font-semibold tabular-nums" />
+          // Carries the price read's own failure: this figure is derived from it, so a dead oracle
+          // has to read as unavailable here too rather than as a number still on its way.
+          <UsdValue value={capacity} isError={isError} approx={false} maximumFractionDigits={0} className="text-lg font-semibold tabular-nums" />
         )}
       </div>
       {config?.enabled && (
@@ -540,7 +550,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const collateral = usePositionValue(id);
   // The LP type comes off the position itself rather than from the subgraph's label, so the risk
   // parameters shown are keyed to what the protocol recorded rather than to a name match.
-  const pos = useOnChainPosition(id);
+  const {position: pos, refetch: refetchPos} = useOnChainPosition(id);
   const config = useCollateralConfig(pos?.lpType);
   const cooldown = useBorrowCooldown(pos?.depositBlock);
 
@@ -583,7 +593,12 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // An amount whose consequence cannot be shown cannot be acknowledged either, so it blocks the
   // borrow rather than skipping the gate: `needsAck` is false both when the borrow is safe and
   // when the risk parameters have not been read, and only one of those should let the user sign.
-  const valid = parsed > 0n && available !== undefined && parsed <= available && projected !== undefined;
+  // borrow() also rejects a position that no longer holds its LP and any draw against a collateral
+  // type that has since been disabled — getMaxBorrow keeps pricing the stored LP through both, so
+  // the amount can look drawable right up to the revert.
+  const borrowable = isOpenOnChain(pos) === true && config?.enabled === true;
+  const valid =
+    borrowable && parsed > 0n && available !== undefined && parsed <= available && projected !== undefined;
 
   return (
     <div className="card card-hover p-5 space-y-4">
@@ -670,6 +685,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               refetchDebt();
               refetchHealth();
               refetchMax();
+              refetchPos();
               onDone();
             }}
           />
