@@ -109,3 +109,15 @@ export interface SubgraphPosition {
   currentDebt: string;
   pool: SubgraphPoolRef;
 }
+
+/**
+ * Whether the protocol still holds this position's collateral.
+ *
+ * withdraw() only flips the status to Closed — it leaves lpToken/tokenId/amount in storage — so
+ * getPositionValue keeps returning a live price for collateral that has already been handed back.
+ * Anything reading an on-chain value for display has to gate on this, or a closed position reports
+ * collateral the user is holding in their own wallet.
+ */
+export function isPositionOpen(status: string): boolean {
+  return status === 'active' || status === 'borrowed';
+}

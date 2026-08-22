@@ -6,10 +6,12 @@ import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
+import {usePositionValue} from '@/hooks/usePositionValue';
+import {isPositionOpen, type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
+import {UsdValue} from '@/components/UsdValue';
 import {tokenInfo} from '@/lib/tokens';
 import {V3_NFT_MANAGER, V3_FEE, nftManagerAbi} from '@/lib/v3';
 
@@ -38,9 +40,6 @@ function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean 
 const LP_TYPE_V2 = 0;
 const LP_TYPE_V3 = 1;
 
-// LPOracleHub prices in USD with 18 decimals, regardless of the collateral's own decimals.
-const USD_DECIMALS = 18;
-
 // The hub is read off PositionManager rather than from deployments.json so the price shown is by
 // construction the one the protocol will use: PositionManager.getPositionValue asks this same hub,
 // and getHealthFactor is computed from that. A hub address configured separately in the frontend
@@ -63,19 +62,6 @@ function useLpUsdValue(lpToken: `0x${string}` | undefined, tokenId: bigint, amou
     query: {enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n)},
   });
   return {value: data as bigint | undefined, isError};
-}
-
-function formatUsd(v: bigint): string {
-  return `$${fmt(Number(formatUnits(v, USD_DECIMALS)))}`;
-}
-
-// The oracle reverts instead of returning a stale figure when a Chainlink feed is down, so a failed
-// read is rendered as unavailable. Substituting a fallback — spot reserves, or zero — would state a
-// collateral value the protocol would refuse to credit.
-function UsdValue({value, isError, className = ''}: {value: bigint | undefined; isError: boolean; className?: string}) {
-  if (isError) return <span className={`text-[var(--muted)] ${className}`}>price unavailable</span>;
-  if (value === undefined) return <span className={`text-[var(--muted)] ${className}`}>—</span>;
-  return <span className={className}>≈ {formatUsd(value)}</span>;
 }
 
 function parseAmount(v: string, decimals: number): bigint {
@@ -440,6 +426,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id]});
   const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
   const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
+  const collateral = usePositionValue(id);
 
   const debtBn = (debt as bigint) ?? 0n;
   // getMaxBorrow is the position's total borrowing capacity, and borrow() checks
@@ -470,7 +457,15 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
       <div className="grid grid-cols-3 gap-2 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Collateral</p>
-          <p className="tabular-nums">${fmt(Number(position.depositValue), 0)}</p>
+          {/* Priced live, from the same call the health factor above divides by. The subgraph's
+              deposit-time figure would sit next to a health factor that had already moved. */}
+          <p className="tabular-nums">
+            {isPositionOpen(position.status) ? (
+              <UsdValue {...collateral} approx={false} maximumFractionDigits={0} />
+            ) : (
+              '—'
+            )}
+          </p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Debt</p>

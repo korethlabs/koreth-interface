@@ -6,10 +6,12 @@ import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPosition, SubgraphSupplyPosition} from '@/lib/subgraph';
+import {usePositionValue} from '@/hooks/usePositionValue';
+import {isPositionOpen, type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
+import {UsdValue} from '@/components/UsdValue';
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -144,6 +146,7 @@ function PositionCard({
     functionName: 'allowance',
     args: [owner, deployments.lendingEngine],
   });
+  const collateral = usePositionValue(id);
 
   // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
   // model rate at the pool's current utilization. Shared across every collateral type now.
@@ -179,7 +182,18 @@ function PositionCard({
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-        <Stat label="Collateral" value={`$${Number(position.depositValue).toLocaleString('en-US', {maximumFractionDigits: 0})}`} />
+        {/* Live, so it can't contradict the health factor two cells over. A closed position has
+            already had its LP returned, and getPositionValue would still price it. */}
+        <Stat
+          label="Collateral"
+          value={
+            isPositionOpen(position.status) ? (
+              <UsdValue {...collateral} approx={false} maximumFractionDigits={0} />
+            ) : (
+              '—'
+            )
+          }
+        />
         <Stat label="Debt" value={`${Number(formatUnits(debtBn, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`} />
         <Stat
           label="Borrow APR"
@@ -253,7 +267,7 @@ function PositionCard({
   );
 }
 
-function Stat({label, value}: {label: string; value: string}) {
+function Stat({label, value}: {label: string; value: React.ReactNode}) {
   return (
     <div>
       <p className="text-[var(--muted)]">{label}</p>
