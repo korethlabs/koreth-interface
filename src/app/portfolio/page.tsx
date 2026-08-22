@@ -272,7 +272,10 @@ function PositionCard({
         </div>
       )}
 
-      {noDebt && position.status !== 'closed' && (
+      {/* Offered on the same record the collateral cell reads, not on the subgraph's: the blocks
+          right after a withdraw are precisely when the index still says the position is open, and
+          that is when this button would invite a second withdraw of an LP already returned. */}
+      {noDebt && isOpenOnChain(onChain) && (
         <TxButton
           address={deployments.positionManager}
           abi={positionManagerAbi}
