@@ -4,6 +4,7 @@ import {useReadContract} from 'wagmi';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi} from '@/generated/abis';
 import {tokenInfo} from '@/lib/tokens';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 /** The fields of PositionManager's Position struct this app reads. */
 export type OnChainPosition = {
@@ -46,9 +47,9 @@ export function isOpenOnChain(position: OnChainPosition | undefined): boolean | 
  * collateral: the subgraph re-derives the LP type into a display string and can be several blocks
  * behind, while this is the record the protocol itself acts on.
  *
- * Returns its refetch because `status` lives in here: withdraw() changes it, and a page that
- * refreshed only debt and health after a withdraw would keep gating on a cached `Active` and go on
- * pricing an LP that is already back in the user's wallet.
+ * Polled, and returns its refetch as well: `status` lives in here, and it changes both through the
+ * user's own withdraw — which the refetch covers immediately — and through a liquidation someone
+ * else sends, which nothing on this page would otherwise hear about.
  */
 export function useOnChainPosition(positionId: bigint): {
   position: OnChainPosition | undefined;
@@ -59,6 +60,7 @@ export function useOnChainPosition(positionId: bigint): {
     abi: positionManagerAbi,
     functionName: 'getPosition',
     args: [positionId],
+    query: {refetchInterval: LIVE_REFETCH_MS},
   });
   return {position: data as OnChainPosition | undefined, refetch};
 }

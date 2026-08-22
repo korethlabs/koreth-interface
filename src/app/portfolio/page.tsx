@@ -13,6 +13,7 @@ import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
 import {UsdValue} from '@/components/UsdValue';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -123,23 +124,28 @@ function PositionCard({
   const asset = position.pool.borrowAsset as `0x${string}`;
   const {symbol, decimals} = position.pool;
 
+  // Polled: debt accrues every block, and the health factor and capacity move with the LP price.
+  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
   const {data: debt, refetch: refetchDebt} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getDebt',
     args: [id],
+    query: live,
   });
   const {data: health, refetch: refetchHealth} = useReadContract({
     address: deployments.positionManager,
     abi: positionManagerAbi,
     functionName: 'getHealthFactor',
     args: [id],
+    query: live,
   });
   const {data: maxBorrow} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getMaxBorrow',
     args: [id],
+    query: live,
   });
   const {data: allowance, refetch: refetchAllow} = useReadContract({
     address: asset,
@@ -181,10 +187,15 @@ function PositionCard({
 
   return (
     <div className="card p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        {/* Named by what it holds rather than by its sequential id, which tells the user nothing
-            about which of their positions they are looking at. */}
-        <h2 className="text-lg font-semibold">{positionTitle(onChain, position.id)}</h2>
+      <div className="flex items-start justify-between">
+        <div>
+          {/* Named by what it holds rather than by its sequential id, which tells the user nothing
+              about which of their positions they are looking at. The id stays underneath: two V2
+              deposits of the same pair carry the same name, and this is the card that asks which
+              debt to repay. */}
+          <h2 className="text-lg font-semibold leading-tight">{positionTitle(onChain, position.id)}</h2>
+          <p className="text-xs text-[var(--muted)]">Position #{position.id}</p>
+        </div>
         <span className="text-sm text-[var(--muted-strong)] capitalize">{position.status}</span>
       </div>
 

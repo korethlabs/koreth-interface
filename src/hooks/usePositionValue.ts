@@ -3,6 +3,7 @@
 import {useReadContract, useReadContracts} from 'wagmi';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi} from '@/generated/abis';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 export type PositionValue = {value: bigint | undefined; isError: boolean};
 
@@ -23,6 +24,7 @@ export function usePositionValue(positionId: bigint): PositionValue {
     abi: positionManagerAbi,
     functionName: 'getPositionValue',
     args: [positionId],
+    query: {refetchInterval: LIVE_REFETCH_MS},
   });
   return {value: data as bigint | undefined, isError};
 }
@@ -40,7 +42,7 @@ export function usePositionValues(positionIds: bigint[]): (positionId: bigint | 
       functionName: 'getPositionValue' as const,
       args: [id] as const,
     })),
-    query: {enabled: positionIds.length > 0},
+    query: {enabled: positionIds.length > 0, refetchInterval: LIVE_REFETCH_MS},
   });
 
   // Two ways a value can be missing, and they have to be told apart: a per-call `failure` is one

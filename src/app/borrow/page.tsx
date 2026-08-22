@@ -10,6 +10,7 @@ import {usePositionValue} from '@/hooks/usePositionValue';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
@@ -544,9 +545,12 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
 
-  const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id]});
-  const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
-  const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
+  // Polled: debt accrues every block and both the health factor and the capacity are re-derived
+  // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
+  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
+  const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id], query: live});
+  const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id], query: live});
+  const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id], query: live});
   const collateral = usePositionValue(id);
   // The LP type comes off the position itself rather than from the subgraph's label, so the risk
   // parameters shown are keyed to what the protocol recorded rather than to a name match.
@@ -569,10 +573,15 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // be smaller. Offering the exact headroom therefore reverts EXCEEDS_MAX_LTV whenever either
   // moves between the read and the block that mines the borrow. Aave's interface holds back the
   // same 1% of its max borrow, for the same reason.
+  //
+  // The 1% comes off the capacity before the debt rather than off what is left after it. Both
+  // things it absorbs — accrued interest and a fall in the LP price — are sized by the position,
+  // not by its remaining headroom, so taking the cut afterwards would shrink the buffer to nothing
+  // exactly where it is needed: a position already near its limit. Clamped at zero, since 99% of
+  // capacity can be below a debt that has accrued past it.
+  const drawable = capacityRaw === undefined ? undefined : (capacityRaw * BORROW_HEADROOM_BPS) / 10_000n;
   const available =
-    debtRaw === undefined || capacityRaw === undefined
-      ? undefined
-      : ((capacityRaw > debtRaw ? capacityRaw - debtRaw : 0n) * BORROW_HEADROOM_BPS) / 10_000n;
+    debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
   const parsed = parseAmount(amount, decimals);
   const hf = health as bigint | undefined;
   const projected =

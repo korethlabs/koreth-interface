@@ -3,6 +3,7 @@
 import {useReadContract} from 'wagmi';
 import {deployments} from '@/generated/deployments';
 import {protocolCoreAbi, riskManagerAbi} from '@/generated/abis';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 export type CollateralConfig = {
   maxLtv: bigint;
@@ -36,7 +37,9 @@ export function useCollateralConfig(lpType: number | undefined): CollateralConfi
     abi: riskManagerAbi,
     functionName: 'getCollateralConfig',
     args: lpType === undefined ? undefined : [lpType],
-    query: {enabled: !!riskManager && lpType !== undefined},
+    // Polled because `enabled` is a switch an admin can throw while the page is open: without it a
+    // card that loaded before a suspension keeps offering a deposit the protocol now refuses.
+    query: {enabled: !!riskManager && lpType !== undefined, refetchInterval: LIVE_REFETCH_MS},
   });
   return data as CollateralConfig | undefined;
 }
