@@ -55,14 +55,17 @@ export function useOnChainPosition(positionId: bigint): {
   position: OnChainPosition | undefined;
   refetch: () => void;
 } {
-  const {data, refetch} = useReadContract({
+  const {data, isError, refetch} = useReadContract({
     address: deployments.positionManager,
     abi: positionManagerAbi,
     functionName: 'getPosition',
     args: [positionId],
     query: {refetchInterval: LIVE_REFETCH_MS},
   });
-  return {position: data as OnChainPosition | undefined, refetch};
+  // A failed refetch leaves the last successful record cached. That record carries `status`, so
+  // serving it would keep isOpenOnChain answering true for a position the protocol has since
+  // closed — the one answer this hook exists to get right.
+  return {position: isError ? undefined : (data as OnChainPosition | undefined), refetch};
 }
 
 /**

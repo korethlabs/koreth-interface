@@ -25,14 +25,22 @@ const BPS = 10_000n;
  * rendering risk parameters from a RiskManager the contracts had already stopped using.
  */
 export function useRiskManager(): `0x${string}` | undefined {
-  const {data} = useReadContract({address: deployments.core, abi: protocolCoreAbi, functionName: 'riskManagerAddr'});
-  return data as `0x${string}` | undefined;
+  // Polled alongside the config it addresses: core.setRiskManager can point the protocol at a new
+  // manager while the page is open, and a cached address would keep the cards reading parameters
+  // from one the contracts have stopped consulting — the drift this indirection exists to avoid.
+  const {data, isError} = useReadContract({
+    address: deployments.core,
+    abi: protocolCoreAbi,
+    functionName: 'riskManagerAddr',
+    query: {refetchInterval: LIVE_REFETCH_MS},
+  });
+  return isError ? undefined : (data as `0x${string}` | undefined);
 }
 
 /** Risk parameters for one collateral type, or undefined until they have been read. */
 export function useCollateralConfig(lpType: number | undefined): CollateralConfig | undefined {
   const riskManager = useRiskManager();
-  const {data} = useReadContract({
+  const {data, isError} = useReadContract({
     address: riskManager,
     abi: riskManagerAbi,
     functionName: 'getCollateralConfig',
@@ -41,7 +49,10 @@ export function useCollateralConfig(lpType: number | undefined): CollateralConfi
     // card that loaded before a suspension keeps offering a deposit the protocol now refuses.
     query: {enabled: !!riskManager && lpType !== undefined, refetchInterval: LIVE_REFETCH_MS},
   });
-  return data as CollateralConfig | undefined;
+  // A failed refetch leaves the last successful config cached, and `enabled` is the flag the
+  // deposit and borrow buttons are gated on: serving a stale `true` is how a suspended collateral
+  // type keeps being offered. Unknown is the honest answer, and it fails closed.
+  return isError ? undefined : (data as CollateralConfig | undefined);
 }
 
 /**

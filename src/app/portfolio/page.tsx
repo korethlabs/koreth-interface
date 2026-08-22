@@ -126,21 +126,21 @@ function PositionCard({
 
   // Polled: debt accrues every block, and the health factor and capacity move with the LP price.
   const live = {refetchInterval: LIVE_REFETCH_MS} as const;
-  const {data: debt, refetch: refetchDebt} = useReadContract({
+  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getDebt',
     args: [id],
     query: live,
   });
-  const {data: health, refetch: refetchHealth} = useReadContract({
+  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({
     address: deployments.positionManager,
     abi: positionManagerAbi,
     functionName: 'getHealthFactor',
     args: [id],
     query: live,
   });
-  const {data: maxBorrow} = useReadContract({
+  const {data: maxBorrow, isError: maxBorrowError} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getMaxBorrow',
@@ -171,9 +171,13 @@ function PositionCard({
     query: {enabled: !!irmAddr && poolState !== undefined},
   });
 
-  const debtBn = (debt as bigint) ?? 0n;
+  // An errored read counts as missing rather than as its last cached answer. Zero is not a safe
+  // stand-in here: it is what decides the card offers a withdraw instead of a repay, and withdraw()
+  // reverts on any outstanding debt.
+  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
+  const debtBn = debtRaw ?? 0n;
   const parsed = parseAmount(repayAmt, decimals);
-  const noDebt = debtBn === 0n;
+  const noDebt = debtRaw === 0n;
 
   const refetchAll = () => {
     refetchDebt();
@@ -213,15 +217,26 @@ function PositionCard({
             )
           }
         />
-        <Stat label="Debt" value={`${Number(formatUnits(debtBn, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`} />
+        <Stat
+          label="Debt"
+          value={
+            debtRaw === undefined
+              ? '—'
+              : `${Number(formatUnits(debtRaw, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`
+          }
+        />
         <Stat
           label="Borrow APR"
           value={borrowAprBps === undefined ? '—' : `${(Number(borrowAprBps) / 100).toFixed(2)}%`}
         />
-        <Stat label="Health" value={formatHealth(health as bigint | undefined)} />
+        <Stat label="Health" value={formatHealth(healthError ? undefined : (health as bigint | undefined))} />
         <Stat
           label="Max borrow"
-          value={`${Number(formatUnits((maxBorrow as bigint) ?? 0n, decimals)).toLocaleString('en-US', {maximumFractionDigits: 0})} ${symbol}`}
+          value={
+            maxBorrowError || maxBorrow === undefined
+              ? '—'
+              : `${Number(formatUnits(maxBorrow as bigint, decimals)).toLocaleString('en-US', {maximumFractionDigits: 0})} ${symbol}`
+          }
         />
       </div>
 

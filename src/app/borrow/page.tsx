@@ -67,9 +67,14 @@ function useLpUsdValue(lpToken: `0x${string}` | undefined, tokenId: bigint, amou
     abi: lpOracleHubAbi,
     functionName: 'getRawPrice',
     args: lpToken ? [lpToken, tokenId, amount, lpType] : undefined,
-    query: {enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n)},
+    query: {
+      enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n),
+      refetchInterval: LIVE_REFETCH_MS,
+    },
   });
-  return {value: data as bigint | undefined, isError};
+  // A failed refetch leaves the last successful price in the cache, and a price the oracle has
+  // since stopped answering for is exactly the one that must not be shown as current.
+  return {value: isError ? undefined : (data as bigint | undefined), isError};
 }
 
 function parseAmount(v: string, decimals: number): bigint {
@@ -410,7 +415,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
           args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
         }))
       : [],
-    query: {enabled: !!hub && eligible.length > 0},
+    query: {enabled: !!hub && eligible.length > 0, refetchInterval: LIVE_REFETCH_MS},
   });
   // One config for every row: the risk parameters are per LP type, not per NFT.
   const config = useCollateralConfig(LP_TYPE_V3);
@@ -459,8 +464,8 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
               // A per-call `failure` is one oracle reverting; `valuesError` is the multicall never
               // landing. Both leave the row without a price, and only reading the first would let a
               // dead RPC render as a row still loading.
-              const rowValue = valueResults?.[i]?.result as bigint | undefined;
               const rowError = valuesError || valueResults?.[i]?.status === 'failure';
+              const rowValue = rowError ? undefined : (valueResults?.[i]?.result as bigint | undefined);
               return (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
@@ -548,9 +553,9 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // Polled: debt accrues every block and both the health factor and the capacity are re-derived
   // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
   const live = {refetchInterval: LIVE_REFETCH_MS} as const;
-  const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id], query: live});
-  const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id], query: live});
-  const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id], query: live});
+  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id], query: live});
+  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id], query: live});
+  const {data: maxBorrow, isError: maxBorrowError, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id], query: live});
   const collateral = usePositionValue(id);
   // The LP type comes off the position itself rather than from the subgraph's label, so the risk
   // parameters shown are keyed to what the protocol recorded rather than to a name match.
@@ -558,11 +563,11 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const config = useCollateralConfig(pos?.lpType);
   const cooldown = useBorrowCooldown(pos?.depositBlock);
 
-  // Kept optional as well as coalesced: a zero is the right thing to disable the button on, but
-  // the wrong thing to compute a health factor from — see projectedHealthFactor.
-  const debtRaw = debt as bigint | undefined;
-  const capacityRaw = maxBorrow as bigint | undefined;
-  const debtBn = debtRaw ?? 0n;
+  // A read in error counts as missing rather than as its last successful answer, which TanStack
+  // Query keeps cached: a debt that stopped updating is the input the headroom below is most
+  // sensitive to, and a zero standing in for it reads as a position with nothing drawn.
+  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
+  const capacityRaw = maxBorrowError ? undefined : (maxBorrow as bigint | undefined);
   // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
   // checks `currentDebt + amount <= maxBorrow`, so existing debt has to come off it first. Both
   // reads have to be in before that subtraction means anything — treating a debt still in flight
@@ -583,7 +588,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const available =
     debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
   const parsed = parseAmount(amount, decimals);
-  const hf = health as bigint | undefined;
+  const hf = healthError ? undefined : (health as bigint | undefined);
   const projected =
     parsed > 0n && debtRaw !== undefined ? projectedHealthFactor(debtRaw + parsed, capacityRaw, config) : undefined;
   // Borrowing is capped at maxLtv, so no single borrow can push the health factor to the
@@ -650,7 +655,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Debt</p>
-          <p className="tabular-nums">{fmt(Number(formatUnits(debtBn, decimals)))}</p>
+          <p className="tabular-nums">{debtRaw === undefined ? '—' : fmt(Number(formatUnits(debtRaw, decimals)))}</p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Available</p>
