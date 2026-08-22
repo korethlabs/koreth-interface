@@ -466,6 +466,14 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
               </div>
             ))}
           </div>
+          {/* The oracle values liquidity only — UniswapV3Oracle reports feeValue as zero by
+              design, since uncollected fees are swept to the borrower at liquidation rather than
+              seized. A user comparing this figure with Uniswap's, which does include them, would
+              otherwise have no way to account for the gap. */}
+          <p className="text-xs text-[var(--muted)]">
+            Values cover your liquidity only. Uncollected fees stay yours and are not counted as
+            collateral.
+          </p>
         </div>
       )}
     </div>
