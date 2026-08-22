@@ -33,7 +33,7 @@ export function usePositionValue(positionId: bigint): PositionValue {
  * rows after calling this can't silently pair a value with the wrong position.
  */
 export function usePositionValues(positionIds: bigint[]): (positionId: bigint | string) => PositionValue {
-  const {data} = useReadContracts({
+  const {data, isError} = useReadContracts({
     contracts: positionIds.map((id) => ({
       address: deployments.positionManager,
       abi: positionManagerAbi,
@@ -43,10 +43,15 @@ export function usePositionValues(positionIds: bigint[]): (positionId: bigint | 
     query: {enabled: positionIds.length > 0},
   });
 
+  // Two ways a value can be missing, and they have to be told apart: a per-call `failure` is one
+  // oracle that reverted, while `isError` is the multicall itself never landing. Reading only the
+  // per-call status would leave the whole table looking like it was still loading after the
+  // transport gave up, so every row would render "—" forever instead of saying the price is
+  // unavailable.
   const byId = new Map<string, PositionValue>(
     positionIds.map((id, i) => [
       id.toString(),
-      {value: data?.[i]?.result as bigint | undefined, isError: data?.[i]?.status === 'failure'},
+      {value: data?.[i]?.result as bigint | undefined, isError: isError || data?.[i]?.status === 'failure'},
     ]),
   );
   return (positionId) => byId.get(positionId.toString()) ?? NO_VALUE;

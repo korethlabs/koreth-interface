@@ -265,6 +265,11 @@ function DepositV2Card({
 
         <BorrowingCapacity capacity={capacity} config={config} />
 
+        {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
+            the cards come from a subgraph query that can lag the chain, so a collateral type can
+            still be offered here after being suspended. An unread config disables the button too —
+            the alternative is sending a deposit() the protocol may reject and charging the user gas
+            to find out. */}
         <ActionButton
           approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: (allowance as bigint) ?? 0n}}
           address={deployments.positionManager}
@@ -272,7 +277,7 @@ function DepositV2Card({
           functionName="deposit"
           args={[deployments.v2Pair, 0n, balance, borrowAsset]}
           label="Deposit full balance"
-          disabled={balance === 0n || borrowAsset === ''}
+          disabled={balance === 0n || borrowAsset === '' || !config?.enabled}
           onConfirmed={() => {
             refetchBalance();
             refetchAllowance();
@@ -409,6 +414,11 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
         <p className="text-sm text-[var(--muted)]">No eligible V3 positions — get one from the Faucet.</p>
       ) : (
         <div className="space-y-3">
+          {config && !config.enabled && (
+            <p className="text-sm text-[var(--muted)]">
+              V3 positions are not accepted as collateral right now.
+            </p>
+          )}
           {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
               shown first so the user can review which NFTs they'll be depositing before granting
               custody. Deposit buttons stay disabled until the one-time approval is confirmed. */}
@@ -460,7 +470,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
                   functionName="deposit"
                   args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
                   label="Deposit"
-                  disabled={borrowAsset === '' || !approvedAll}
+                  disabled={borrowAsset === '' || !approvedAll || !config?.enabled}
                   onConfirmed={() => {
                     refetchCount();
                     onDone();
