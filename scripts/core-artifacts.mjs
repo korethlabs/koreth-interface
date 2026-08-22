@@ -16,6 +16,8 @@ export const ABI_ARTIFACTS = {
     lendingPoolAbi: "LendingPool.sol/LendingPool.json",
     interestRateModelAbi: "InterestRateModel.sol/InterestRateModel.json",
     lpOracleHubAbi: "LPOracleHub.sol/LPOracleHub.json",
+    riskManagerAbi: "RiskManager.sol/RiskManager.json",
+    protocolCoreAbi: "ProtocolCore.sol/ProtocolCore.json",
 };
 
 /** Which keys are numbers rather than addresses — the stub and the emitter both need this. */

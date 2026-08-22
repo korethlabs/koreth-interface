@@ -1,6 +1,9 @@
 'use client';
 
 import {useProtocolStats, useSubgraphPools, useSubgraphPositions} from '../hooks/useSubgraph';
+import {usePositionValues} from '../hooks/usePositionValue';
+import {UsdValue} from '../components/UsdValue';
+import {isPositionOpen} from '../lib/subgraph';
 
 function formatUsd(value: string | undefined): string {
   const n = Number(value ?? 0);
@@ -22,6 +25,11 @@ export default function Dashboard() {
   const {data: stats} = useProtocolStats();
   const {data: pools} = useSubgraphPools();
   const {data: positions, isLoading, error} = useSubgraphPositions();
+  // Only the open ones are priced: the read would succeed for the others and report collateral
+  // that has already left the protocol.
+  const collateral = usePositionValues(
+    (positions ?? []).filter((p) => isPositionOpen(p.status)).map((p) => BigInt(p.id)),
+  );
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-16">
@@ -93,8 +101,18 @@ export default function Dashboard() {
                     <td className="px-5 py-3.5 font-mono text-xs text-[var(--muted)]">
                       {p.owner.slice(0, 6)}…{p.owner.slice(-4)}
                     </td>
-                    <td className="px-5 py-3.5 text-right tabular-nums">{formatUsd(p.depositValue)}</td>
-                    {/* depositValue is USD, but currentDebt is denominated in the pool's borrow
+                    {/* Live collateral value, not the deposit-time figure the subgraph stores: the
+                        latter never re-prices, so it would disagree with the debt beside it as
+                        soon as the market moves. A closed or liquidated position no longer holds
+                        collateral, and getPositionValue would keep pricing it, so it shows none. */}
+                    <td className="px-5 py-3.5 text-right tabular-nums">
+                      {isPositionOpen(p.status) ? (
+                        <UsdValue {...collateral(p.id)} approx={false} />
+                      ) : (
+                        <span className="text-[var(--muted)]">—</span>
+                      )}
+                    </td>
+                    {/* Collateral is USD, but currentDebt is denominated in the pool's borrow
                         asset — only the same thing for a pegged stablecoin. */}
                     <td className="px-5 py-3.5 text-right tabular-nums">
                       {formatAmount(p.currentDebt)} {p.pool.symbol}

@@ -6,10 +6,14 @@ import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPosition, SubgraphSupplyPosition} from '@/lib/subgraph';
+import {usePositionValue} from '@/hooks/usePositionValue';
+import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
+import {UsdValue} from '@/components/UsdValue';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -120,23 +124,28 @@ function PositionCard({
   const asset = position.pool.borrowAsset as `0x${string}`;
   const {symbol, decimals} = position.pool;
 
-  const {data: debt, refetch: refetchDebt} = useReadContract({
+  // Polled: debt accrues every block, and the health factor and capacity move with the LP price.
+  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
+  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getDebt',
     args: [id],
+    query: live,
   });
-  const {data: health, refetch: refetchHealth} = useReadContract({
+  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({
     address: deployments.positionManager,
     abi: positionManagerAbi,
     functionName: 'getHealthFactor',
     args: [id],
+    query: live,
   });
-  const {data: maxBorrow} = useReadContract({
+  const {data: maxBorrow, isError: maxBorrowError} = useReadContract({
     address: deployments.lendingEngine,
     abi: lendingEngineAbi,
     functionName: 'getMaxBorrow',
     args: [id],
+    query: live,
   });
   const {data: allowance, refetch: refetchAllow} = useReadContract({
     address: asset,
@@ -144,6 +153,8 @@ function PositionCard({
     functionName: 'allowance',
     args: [owner, deployments.lendingEngine],
   });
+  const collateral = usePositionValue(id);
+  const {position: onChain, refetch: refetchOnChain} = useOnChainPosition(id);
 
   // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
   // model rate at the pool's current utilization. Shared across every collateral type now.
@@ -160,35 +171,72 @@ function PositionCard({
     query: {enabled: !!irmAddr && poolState !== undefined},
   });
 
-  const debtBn = (debt as bigint) ?? 0n;
+  // An errored read counts as missing rather than as its last cached answer. Zero is not a safe
+  // stand-in here: it is what decides the card offers a withdraw instead of a repay, and withdraw()
+  // reverts on any outstanding debt.
+  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
+  const debtBn = debtRaw ?? 0n;
   const parsed = parseAmount(repayAmt, decimals);
-  const noDebt = debtBn === 0n;
+  const noDebt = debtRaw === 0n;
 
   const refetchAll = () => {
     refetchDebt();
     refetchHealth();
     refetchAllow();
+    // Includes the position record: withdraw() closes it, and the collateral cell gates on that
+    // status rather than on the subgraph's.
+    refetchOnChain();
     onDone();
   };
 
   return (
     <div className="card p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Position #{position.id}</h2>
+      <div className="flex items-start justify-between">
+        <div>
+          {/* Named by what it holds rather than by its sequential id, which tells the user nothing
+              about which of their positions they are looking at. The id stays underneath: two V2
+              deposits of the same pair carry the same name, and this is the card that asks which
+              debt to repay. */}
+          <h2 className="text-lg font-semibold leading-tight">{positionTitle(onChain, position.id)}</h2>
+          <p className="text-xs text-[var(--muted)]">Position #{position.id}</p>
+        </div>
         <span className="text-sm text-[var(--muted-strong)] capitalize">{position.status}</span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-        <Stat label="Collateral" value={`$${Number(position.depositValue).toLocaleString('en-US', {maximumFractionDigits: 0})}`} />
-        <Stat label="Debt" value={`${Number(formatUnits(debtBn, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`} />
+        {/* Live, so it can't contradict the health factor two cells over. A closed position has
+            already had its LP returned, and getPositionValue would still price it — so the status
+            gating this comes from the position record itself, not from the index that lags it. */}
+        <Stat
+          label="Collateral"
+          value={
+            isOpenOnChain(onChain) ? (
+              <UsdValue {...collateral} approx={false} maximumFractionDigits={0} />
+            ) : (
+              '—'
+            )
+          }
+        />
+        <Stat
+          label="Debt"
+          value={
+            debtRaw === undefined
+              ? '—'
+              : `${Number(formatUnits(debtRaw, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`
+          }
+        />
         <Stat
           label="Borrow APR"
           value={borrowAprBps === undefined ? '—' : `${(Number(borrowAprBps) / 100).toFixed(2)}%`}
         />
-        <Stat label="Health" value={formatHealth(health as bigint | undefined)} />
+        <Stat label="Health" value={formatHealth(healthError ? undefined : (health as bigint | undefined))} />
         <Stat
           label="Max borrow"
-          value={`${Number(formatUnits((maxBorrow as bigint) ?? 0n, decimals)).toLocaleString('en-US', {maximumFractionDigits: 0})} ${symbol}`}
+          value={
+            maxBorrowError || maxBorrow === undefined
+              ? '—'
+              : `${Number(formatUnits(maxBorrow as bigint, decimals)).toLocaleString('en-US', {maximumFractionDigits: 0})} ${symbol}`
+          }
         />
       </div>
 
@@ -239,7 +287,10 @@ function PositionCard({
         </div>
       )}
 
-      {noDebt && position.status !== 'closed' && (
+      {/* Offered on the same record the collateral cell reads, not on the subgraph's: the blocks
+          right after a withdraw are precisely when the index still says the position is open, and
+          that is when this button would invite a second withdraw of an LP already returned. */}
+      {noDebt && isOpenOnChain(onChain) && (
         <TxButton
           address={deployments.positionManager}
           abi={positionManagerAbi}
@@ -253,7 +304,7 @@ function PositionCard({
   );
 }
 
-function Stat({label, value}: {label: string; value: string}) {
+function Stat({label, value}: {label: string; value: React.ReactNode}) {
   return (
     <div>
       <p className="text-[var(--muted)]">{label}</p>

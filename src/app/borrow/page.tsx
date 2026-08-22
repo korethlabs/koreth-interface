@@ -1,20 +1,34 @@
 'use client';
 
 import {useEffect, useMemo, useState} from 'react';
-import {useAccount, useReadContract, useReadContracts} from 'wagmi';
+import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPool, SubgraphPosition} from '@/lib/subgraph';
+import {usePositionValue} from '@/hooks/usePositionValue';
+import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
+import {UsdValue} from '@/components/UsdValue';
 import {tokenInfo} from '@/lib/tokens';
-import {V3_NFT_MANAGER, V3_FEE, nftManagerAbi} from '@/lib/v3';
+import {V3_NFT_MANAGER, V3_FEE, isFullRange, nftManagerAbi} from '@/lib/v3';
 
 const LP_DECIMALS = 18;
 const LP_COLOR = '#8b93ff';
+
+/** Share of a position's borrowing capacity the interface offers, in bps. See `available` below. */
+const BORROW_HEADROOM_BPS = 9_900n;
+
+/**
+ * Health factor below which a borrow has to be acknowledged explicitly. Matches the threshold
+ * this page already paints as a warning, so the colour and the checkbox agree on what is risky.
+ */
+const RISK_ACK_HEALTH_FACTOR = 15n * 10n ** 17n;
 
 // Quote tokens whose WETH V3 pool is whitelisted as collateral on-chain. Only pairs listed here are
 // shown as depositable: deposit() reverts COLLATERAL_NOT_ENABLED for a pool ProtocolCore hasn't
@@ -33,13 +47,6 @@ function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean 
   if (a !== weth && b !== weth) return false;
   return V3_ELIGIBLE_QUOTES.includes(a === weth ? b : a);
 }
-
-// ILPAdapter.LPType, the discriminator LPOracleHub routes on to pick the per-protocol oracle.
-const LP_TYPE_V2 = 0;
-const LP_TYPE_V3 = 1;
-
-// LPOracleHub prices in USD with 18 decimals, regardless of the collateral's own decimals.
-const USD_DECIMALS = 18;
 
 // The hub is read off PositionManager rather than from deployments.json so the price shown is by
 // construction the one the protocol will use: PositionManager.getPositionValue asks this same hub,
@@ -60,22 +67,14 @@ function useLpUsdValue(lpToken: `0x${string}` | undefined, tokenId: bigint, amou
     abi: lpOracleHubAbi,
     functionName: 'getRawPrice',
     args: lpToken ? [lpToken, tokenId, amount, lpType] : undefined,
-    query: {enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n)},
+    query: {
+      enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n),
+      refetchInterval: LIVE_REFETCH_MS,
+    },
   });
-  return {value: data as bigint | undefined, isError};
-}
-
-function formatUsd(v: bigint): string {
-  return `$${fmt(Number(formatUnits(v, USD_DECIMALS)))}`;
-}
-
-// The oracle reverts instead of returning a stale figure when a Chainlink feed is down, so a failed
-// read is rendered as unavailable. Substituting a fallback — spot reserves, or zero — would state a
-// collateral value the protocol would refuse to credit.
-function UsdValue({value, isError, className = ''}: {value: bigint | undefined; isError: boolean; className?: string}) {
-  if (isError) return <span className={`text-[var(--muted)] ${className}`}>price unavailable</span>;
-  if (value === undefined) return <span className={`text-[var(--muted)] ${className}`}>—</span>;
-  return <span className={className}>≈ {formatUsd(value)}</span>;
+  // A failed refetch leaves the last successful price in the cache, and a price the oracle has
+  // since stopped answering for is exactly the one that must not be shown as current.
+  return {value: isError ? undefined : (data as bigint | undefined), isError};
 }
 
 function parseAmount(v: string, decimals: number): bigint {
@@ -235,16 +234,15 @@ function DepositV2Card({
   pools: SubgraphPool[];
   onDone: () => void;
 }) {
-  const [amount, setAmount] = useState('');
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
 
   const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
   const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
-  const parsed = parseAmount(amount, LP_DECIMALS);
   const balance = (lpBalance as bigint) ?? 0n;
-  const valid = parsed > 0n && parsed <= balance && borrowAsset !== '';
   const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
+  const config = useCollateralConfig(LP_TYPE_V2);
+  const capacity = borrowingCapacityUsd(lpUsd, config);
 
   return (
     <div className="card p-5 space-y-4">
@@ -258,39 +256,93 @@ function DepositV2Card({
 
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
-      <div className="space-y-2">
-        {/* The raw LP count leads with its USD value and is demoted to the line below. A WETH/USDC
-            LP balance reads as ~0.000086 because the pair's total supply is the geometric mean of a
-            6- and an 18-decimal reserve, so a five-figure position looks like dust. Max still fills
-            the input with the full-precision balance: rounding it would strand the remainder. */}
-        <div className="flex items-center justify-between text-xs text-[var(--muted)]">
-          <span>LP balance</span>
-          <UsdValue value={lpUsd} isError={lpUsdError} className="text-sm text-[var(--foreground)]" />
+      <div className="space-y-3">
+        {/* The USD value leads and the raw LP count is demoted beneath it. A WETH/USDC LP balance
+            reads as ~0.000086 because the pair's total supply is the geometric mean of a 6- and an
+            18-decimal reserve, so a five-figure position looks like dust. The count stays visible
+            because it is what a block explorer or Uniswap will show for the same balance. */}
+        <div>
+          <p className="text-xs text-[var(--muted)]">Your LP balance</p>
+          <UsdValue value={lpUsd} isError={lpUsdError} className="text-2xl font-semibold tabular-nums" />
+          <p className="text-xs text-[var(--muted)] tabular-nums">
+            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP
+          </p>
         </div>
-        <div className="flex justify-end text-xs text-[var(--muted)]">
-          <button onClick={() => setAmount(formatUnits(balance, LP_DECIMALS))} className="hover:text-[var(--foreground)]">
-            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP · Max
-          </button>
-        </div>
-        <div className="flex gap-2">
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" inputMode="decimal" className="input flex-1 p-2.5" />
-          <ActionButton
-            approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
-            address={deployments.positionManager}
-            abi={positionManagerAbi}
-            functionName="deposit"
-            args={[deployments.v2Pair, 0n, parsed, borrowAsset]}
-            label="Deposit"
-            disabled={!valid}
-            onConfirmed={() => {
-              setAmount('');
-              refetchBalance();
-              refetchAllowance();
-              onDone();
-            }}
-          />
-        </div>
+
+        <BorrowingCapacity capacity={capacity} isError={lpUsdError} config={config} />
+
+        {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
+            the cards come from a subgraph query that can lag the chain, so a collateral type can
+            still be offered here after being suspended. An unread config disables the button too —
+            the alternative is sending a deposit() the protocol may reject and charging the user gas
+            to find out. */}
+        <ActionButton
+          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: (allowance as bigint) ?? 0n}}
+          address={deployments.positionManager}
+          abi={positionManagerAbi}
+          functionName="deposit"
+          args={[deployments.v2Pair, 0n, balance, borrowAsset]}
+          label="Deposit full balance"
+          disabled={balance === 0n || borrowAsset === '' || !config?.enabled}
+          onConfirmed={() => {
+            refetchBalance();
+            refetchAllowance();
+            onDone();
+          }}
+        />
+        {/* No amount to choose: the whole balance goes in as one position. withdraw() takes no
+            amount and requires the position's debt to be zero, so what a partial deposit would
+            really buy is the option to split the LP across positions and exit one of them while
+            the other keeps borrowing. That is a portfolio decision, not a deposit-form decision,
+            and putting it behind an LP-denominated input — a field that reads 0.000084 for a
+            five-figure balance — asks for it in the one unit the user cannot reason about. */}
+        <p className="text-xs text-[var(--muted)]">
+          Deposits your whole LP balance as a single position. You can withdraw it once the
+          position&apos;s debt is fully repaid. Protocol-wide borrow caps may limit you to less than
+          your LTV limit.
+        </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What this collateral's own risk parameters allow, shown before the deposit so the user can
+ * decide whether it is worth locking the LP up at all — the question every lending interface
+ * answers up front, and the one this page previously answered only after the deposit.
+ *
+ * The label says LTV because that is all this figure is. RiskManager also enforces a global borrow
+ * cap, a per-LP-type cap, a daily borrow-increase window and a maximum position value, any of
+ * which can bind first; folding those in means reading protocol-wide state that has nothing to do
+ * with this position, so they are named rather than silently ignored.
+ */
+function BorrowingCapacity({
+  capacity,
+  isError,
+  config,
+}: {
+  capacity: bigint | undefined;
+  isError: boolean;
+  config: CollateralConfig | undefined;
+}) {
+  return (
+    <div className="flex items-baseline justify-between rounded-lg border border-[var(--border)] px-3 py-2">
+      <div>
+        <p className="text-xs text-[var(--muted)]">Your LTV limit</p>
+        {config && !config.enabled ? (
+          <p className="text-sm text-[var(--muted)]">not accepted as collateral right now</p>
+        ) : (
+          // Carries the price read's own failure: this figure is derived from it, so a dead oracle
+          // has to read as unavailable here too rather than as a number still on its way.
+          <UsdValue value={capacity} isError={isError} approx={false} maximumFractionDigits={0} className="text-lg font-semibold tabular-nums" />
+        )}
+      </div>
+      {config?.enabled && (
+        <p className="text-xs text-[var(--muted)]">
+          {Number(config.maxLtv) / 100}% LTV
+          {config.haircut > 0n && ` · ${Number(config.haircut) / 100}% haircut`}
+        </p>
+      )}
     </div>
   );
 }
@@ -341,7 +393,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
       const [, , token0, token1, fee, , , liquidity] = e.p;
       return isEligibleV3Pair(token0, token1, Number(fee)) && liquidity > 0n;
     })
-    .map(({id, p}) => ({id, token0: p[2], token1: p[3]}));
+    .map(({id, p}) => ({id, token0: p[2], token1: p[3], fee: Number(p[4]), tickLower: p[5], tickUpper: p[6]}));
 
   const {data: approvedAll, refetch: refetchApproval} = useReadContract({
     address: V3_NFT_MANAGER,
@@ -354,7 +406,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
   // hook per row would both multiply the RPC round-trips and make the count vary between renders.
   // The V3 oracle keys off the NFT manager address and tokenId, so amount is passed as 0.
   const hub = useOracleHub();
-  const {data: valueResults} = useReadContracts({
+  const {data: valueResults, isError: valuesError} = useReadContracts({
     contracts: hub
       ? eligible.map(({id}) => ({
           address: hub,
@@ -363,8 +415,10 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
           args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
         }))
       : [],
-    query: {enabled: !!hub && eligible.length > 0},
+    query: {enabled: !!hub && eligible.length > 0, refetchInterval: LIVE_REFETCH_MS},
   });
+  // One config for every row: the risk parameters are per LP type, not per NFT.
+  const config = useCollateralConfig(LP_TYPE_V3);
 
   return (
     <div className="card p-5 space-y-4">
@@ -382,6 +436,11 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
         <p className="text-sm text-[var(--muted)]">No eligible V3 positions — get one from the Faucet.</p>
       ) : (
         <div className="space-y-3">
+          {config && !config.enabled && (
+            <p className="text-sm text-[var(--muted)]">
+              V3 positions are not accepted as collateral right now.
+            </p>
+          )}
           {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
               shown first so the user can review which NFTs they'll be depositing before granting
               custody. Deposit buttons stay disabled until the one-time approval is confirmed. */}
@@ -401,14 +460,36 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
             </div>
           )}
           <div>
-            {eligible.map(({id, token0, token1}, i) => (
+            {eligible.map(({id, token0, token1, fee, tickLower, tickUpper}, i) => {
+              // A per-call `failure` is one oracle reverting; `valuesError` is the multicall never
+              // landing. Both leave the row without a price, and only reading the first would let a
+              // dead RPC render as a row still loading.
+              const rowError = valuesError || valueResults?.[i]?.status === 'failure';
+              const rowValue = rowError ? undefined : (valueResults?.[i]?.result as bigint | undefined);
+              return (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
+                  <p className="text-sm leading-tight font-semibold">
+                    {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol} · V3 #{id.toString()}
+                  </p>
                   <p className="text-sm leading-tight">
-                    <UsdValue value={valueResults?.[i]?.result as bigint | undefined} isError={valueResults?.[i]?.status === 'failure'} />
+                    <UsdValue value={rowValue} isError={rowError} />
+                  </p>
+                  {/* The pair, fee tier and range all come out of the positions() call already made
+                      to filter the list, so this costs no extra reads. Whether the range is
+                      currently in play is deliberately not shown: that needs the pool's spot tick,
+                      the manipulable figure the protocol's own oracle refuses to price from. */}
+                  <p className="text-xs text-[var(--muted)]">
+                    {fee / 10_000}% fee · {isFullRange(tickLower, tickUpper) ? 'full range' : 'concentrated range'}
                   </p>
                   <p className="text-xs text-[var(--muted)]">
-                    NFT #{id.toString()} · {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
+                    LTV limit{' '}
+                    <UsdValue
+                      value={borrowingCapacityUsd(rowValue, config)}
+                      isError={rowError}
+                      approx={false}
+                      maximumFractionDigits={0}
+                    />
                   </p>
                 </div>
                 <TxButton
@@ -417,39 +498,121 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
                   functionName="deposit"
                   args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
                   label="Deposit"
-                  disabled={borrowAsset === '' || !approvedAll}
+                  disabled={borrowAsset === '' || !approvedAll || !config?.enabled}
                   onConfirmed={() => {
                     refetchCount();
                     onDone();
                   }}
                 />
               </div>
-            ))}
+              );
+            })}
           </div>
+          {/* The oracle values liquidity only — UniswapV3Oracle reports feeValue as zero by
+              design, since uncollected fees are swept to the borrower at liquidation rather than
+              seized. A user comparing this figure with Uniswap's, which does include them, would
+              otherwise have no way to account for the gap. */}
+          <p className="text-xs text-[var(--muted)]">
+            Values cover your liquidity only. Uncollected fees stay yours and are not counted as
+            collateral. Protocol-wide borrow caps may limit you to less than your LTV limit.
+          </p>
         </div>
       )}
     </div>
   );
 }
 
+/**
+ * borrow() requires `block.number > depositBlock + borrowCooldownBlocks`: an anti-manipulation
+ * delay that makes depositing and borrowing in the same block impossible. Until it elapses the
+ * Borrow button reverted BORROW_COOLDOWN with nothing on screen to explain the failure, which
+ * reads as a broken protocol rather than as a deliberate wait.
+ *
+ * `ready` is false while any of the three reads is still in flight — an unknown cooldown is
+ * treated as not elapsed, so the button is never enabled on an assumption.
+ */
+function useBorrowCooldown(depositBlock: bigint | undefined): {ready: boolean; blocksLeft: bigint | undefined} {
+  const {data: cooldownBlocks} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'borrowCooldownBlocks'});
+  const {data: blockNumber} = useBlockNumber({watch: true});
+
+  if (depositBlock === undefined || cooldownBlocks === undefined || blockNumber === undefined) {
+    return {ready: false, blocksLeft: undefined};
+  }
+  // The contract's check is strict, so the first block that satisfies it is one past the sum.
+  const readyAt = depositBlock + (cooldownBlocks as bigint) + 1n;
+  if (blockNumber >= readyAt) return {ready: true, blocksLeft: 0n};
+  return {ready: false, blocksLeft: readyAt - blockNumber};
+}
+
 function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onDone: () => void}) {
   const [amount, setAmount] = useState('');
+  const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
 
-  const {data: debt, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id]});
-  const {data: health, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id]});
-  const {data: maxBorrow, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id]});
+  // Polled: debt accrues every block and both the health factor and the capacity are re-derived
+  // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
+  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
+  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id], query: live});
+  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id], query: live});
+  const {data: maxBorrow, isError: maxBorrowError, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id], query: live});
+  const collateral = usePositionValue(id);
+  // The LP type comes off the position itself rather than from the subgraph's label, so the risk
+  // parameters shown are keyed to what the protocol recorded rather than to a name match.
+  const {position: pos, refetch: refetchPos} = useOnChainPosition(id);
+  const config = useCollateralConfig(pos?.lpType);
+  const cooldown = useBorrowCooldown(pos?.depositBlock);
 
-  const debtBn = (debt as bigint) ?? 0n;
-  // getMaxBorrow is the position's total borrowing capacity, and borrow() checks
-  // `currentDebt + amount <= maxBorrow`. Showing it raw as "Available" made the Max button
-  // always revert EXCEEDS_MAX_LTV on any position that already had debt.
-  const capacity = (maxBorrow as bigint) ?? 0n;
-  const available = capacity > debtBn ? capacity - debtBn : 0n;
+  // A read in error counts as missing rather than as its last successful answer, which TanStack
+  // Query keeps cached: a debt that stopped updating is the input the headroom below is most
+  // sensitive to, and a zero standing in for it reads as a position with nothing drawn.
+  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
+  const capacityRaw = maxBorrowError ? undefined : (maxBorrow as bigint | undefined);
+  // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
+  // checks `currentDebt + amount <= maxBorrow`, so existing debt has to come off it first. Both
+  // reads have to be in before that subtraction means anything — treating a debt still in flight
+  // as zero would offer the whole capacity to a position that has already drawn most of it.
+  //
+  // borrow() then re-derives both sides at execution: it accrues interest first, so the debt is
+  // larger than the one read here, and it re-prices the LP through the oracle, so the capacity may
+  // be smaller. Offering the exact headroom therefore reverts EXCEEDS_MAX_LTV whenever either
+  // moves between the read and the block that mines the borrow. Aave's interface holds back the
+  // same 1% of its max borrow, for the same reason.
+  //
+  // The 1% comes off the capacity before the debt rather than off what is left after it. Both
+  // things it absorbs — accrued interest and a fall in the LP price — are sized by the position,
+  // not by its remaining headroom, so taking the cut afterwards would shrink the buffer to nothing
+  // exactly where it is needed: a position already near its limit. Clamped at zero, since 99% of
+  // capacity can be below a debt that has accrued past it.
+  const drawable = capacityRaw === undefined ? undefined : (capacityRaw * BORROW_HEADROOM_BPS) / 10_000n;
+  const available =
+    debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
   const parsed = parseAmount(amount, decimals);
-  const valid = parsed > 0n && parsed <= available;
-  const hf = health as bigint | undefined;
+  const hf = healthError ? undefined : (health as bigint | undefined);
+  const projected =
+    parsed > 0n && debtRaw !== undefined ? projectedHealthFactor(debtRaw + parsed, capacityRaw, config) : undefined;
+  // Borrowing is capped at maxLtv, so no single borrow can push the health factor to the
+  // liquidation line — what it does is decide how far the LP can fall before it gets there.
+  // Below this the drop that would liquidate the position is small enough to be worth an explicit
+  // acknowledgement rather than a colour change, the pattern Aave uses for the same decision.
+  const needsAck = projected !== undefined && projected < RISK_ACK_HEALTH_FACTOR;
+  // The acknowledgement is about one projected health factor, so changing the amount withdraws it
+  // — otherwise a user who accepts 1.4 on a small borrow carries that consent into a larger one
+  // they never looked at. It deliberately survives the projection moving on its own as prices
+  // update, since a checkbox that cleared itself every block would be impossible to tick.
+  const setAmountAndReack = (next: string) => {
+    setAmount(next);
+    setAckRisk(false);
+  };
+  // An amount whose consequence cannot be shown cannot be acknowledged either, so it blocks the
+  // borrow rather than skipping the gate: `needsAck` is false both when the borrow is safe and
+  // when the risk parameters have not been read, and only one of those should let the user sign.
+  // borrow() also rejects a position that no longer holds its LP and any draw against a collateral
+  // type that has since been disabled — getMaxBorrow keeps pricing the stored LP through both, so
+  // the amount can look drawable right up to the revert.
+  const borrowable = isOpenOnChain(pos) === true && config?.enabled === true;
+  const valid =
+    borrowable && parsed > 0n && available !== undefined && parsed <= available && projected !== undefined;
 
   return (
     <div className="card card-hover p-5 space-y-4">
@@ -457,54 +620,97 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         <div className="flex items-center gap-3">
           <TokenChip label={symbol} />
           <div>
-            <p className="font-semibold leading-tight">Position #{position.id}</p>
-            <p className="text-xs text-[var(--muted)]">{position.lpType} · borrow {symbol}</p>
+            {/* "Position #3" says nothing about what is actually locked up. A user with several
+                positions tells them apart by the pair and, for V3, by the NFT they minted. */}
+            <p className="font-semibold leading-tight">{positionTitle(pos, position.id)}</p>
+            <p className="text-xs text-[var(--muted)]">Position #{position.id} · borrow {symbol}</p>
           </div>
         </div>
         <div className="text-right">
           <p className="text-xs text-[var(--muted)]">Health</p>
-          <p className={`text-xl font-semibold tabular-nums leading-tight ${healthColor(hf)}`}>{formatHealth(hf)}</p>
+          {/* The projected value sits next to the current one rather than replacing it: the
+              question being asked is how much this borrow moves the number, which a single
+              figure cannot answer. */}
+          <p className="text-xl font-semibold tabular-nums leading-tight">
+            <span className={healthColor(hf)}>{formatHealth(hf)}</span>
+            {projected !== undefined && (
+              <>
+                <span className="text-[var(--muted)]"> → </span>
+                <span className={healthColor(projected)}>{formatHealth(projected)}</span>
+              </>
+            )}
+          </p>
+          <p className="text-xs text-[var(--muted)]">Liquidation below 1.00</p>
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Collateral</p>
-          <p className="tabular-nums">${fmt(Number(position.depositValue), 0)}</p>
+          {/* Priced live, from the same call the health factor above divides by. The subgraph's
+              deposit-time figure would sit next to a health factor that had already moved. */}
+          <p className="tabular-nums">
+            {isOpenOnChain(pos) ? <UsdValue {...collateral} approx={false} maximumFractionDigits={0} /> : '—'}
+          </p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Debt</p>
-          <p className="tabular-nums">{fmt(Number(formatUnits(debtBn, decimals)))}</p>
+          <p className="tabular-nums">{debtRaw === undefined ? '—' : fmt(Number(formatUnits(debtRaw, decimals)))}</p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Available</p>
-          <p className="tabular-nums">{fmt(Number(formatUnits(available, decimals)))}</p>
+          <p className="tabular-nums">{available === undefined ? '—' : fmt(Number(formatUnits(available, decimals)))}</p>
         </div>
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
           <span>Borrow {symbol}</span>
-          <button onClick={() => setAmount(formatUnits(available, decimals))} className="hover:text-[var(--foreground)]">Max</button>
+          <button
+            onClick={() => available !== undefined && setAmountAndReack(formatUnits(available, decimals))}
+            disabled={available === undefined}
+            className="hover:text-[var(--foreground)] disabled:opacity-40"
+          >
+            Max
+          </button>
         </div>
+        {needsAck && (
+          <label className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/40 p-3 text-xs text-[var(--muted-strong)]">
+            <input type="checkbox" checked={ackRisk} onChange={(e) => setAckRisk(e.target.checked)} className="mt-0.5" />
+            <span>
+              This leaves little room before liquidation: a fall in the value of your LP would put
+              the position below 1.00 and let anyone repay your debt in exchange for the collateral.
+              I understand the risk.
+            </span>
+          </label>
+        )}
         <div className="flex gap-2">
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" inputMode="decimal" className="input flex-1 p-2.5" />
+          <input value={amount} onChange={(e) => setAmountAndReack(e.target.value)} placeholder="0.0" inputMode="decimal" className="input flex-1 p-2.5" />
           <TxButton
             address={deployments.lendingEngine}
             abi={lendingEngineAbi}
             functionName="borrow"
             args={[id, parsed]}
             label="Borrow"
-            disabled={!valid}
+            disabled={!valid || !cooldown.ready || (needsAck && !ackRisk)}
             onConfirmed={() => {
               setAmount('');
+              setAckRisk(false);
               refetchDebt();
               refetchHealth();
               refetchMax();
+              refetchPos();
               onDone();
             }}
           />
         </div>
+        {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
+          <p className="text-xs text-[var(--muted)]">
+            Borrowing unlocks in {cooldown.blocksLeft.toString()} block
+            {cooldown.blocksLeft === 1n ? '' : 's'} — a short delay after each deposit that stops a
+            single transaction from moving the price and borrowing against it.
+          </p>
+        )}
       </div>
     </div>
   );
