@@ -7,8 +7,8 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
-import {positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
-import {isPositionOpen, type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
+import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
@@ -187,11 +187,12 @@ function PositionCard({
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
         {/* Live, so it can't contradict the health factor two cells over. A closed position has
-            already had its LP returned, and getPositionValue would still price it. */}
+            already had its LP returned, and getPositionValue would still price it — so the status
+            gating this comes from the position record itself, not from the index that lags it. */}
         <Stat
           label="Collateral"
           value={
-            isPositionOpen(position.status) ? (
+            isOpenOnChain(onChain) ? (
               <UsdValue {...collateral} approx={false} maximumFractionDigits={0} />
             ) : (
               '—'

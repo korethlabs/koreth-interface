@@ -111,12 +111,17 @@ export interface SubgraphPosition {
 }
 
 /**
- * Whether the protocol still holds this position's collateral.
+ * Whether the protocol still holds this position's collateral, according to the index.
  *
  * withdraw() only flips the status to Closed — it leaves lpToken/tokenId/amount in storage — so
  * getPositionValue keeps returning a live price for collateral that has already been handed back.
  * Anything reading an on-chain value for display has to gate on this, or a closed position reports
  * collateral the user is holding in their own wallet.
+ *
+ * Prefer isOpenOnChain wherever the position record is already being read: this answer trails the
+ * chain by however far indexing is behind, and the blocks right after a withdraw are exactly when
+ * it is wrong. It is used for the global positions table, where the alternative is a getPosition
+ * per row on a list that already grows without bound.
  */
 export function isPositionOpen(status: string): boolean {
   return status === 'active' || status === 'borrowed';

@@ -13,12 +13,31 @@ export type OnChainPosition = {
   lpType: number;
   token0: `0x${string}`;
   token1: `0x${string}`;
+  status: number;
   depositBlock: bigint;
 };
 
 /** ILPAdapter.LPType, the discriminator LPOracleHub routes on to pick the per-protocol oracle. */
 export const LP_TYPE_V2 = 0;
 export const LP_TYPE_V3 = 1;
+
+/** IPositionManager.PositionStatus. */
+const STATUS_ACTIVE = 0;
+const STATUS_BORROWED = 1;
+
+/**
+ * Whether the position still holds its LP, according to the protocol rather than the index.
+ *
+ * withdraw() leaves lpToken and amount in storage, so getPositionValue keeps pricing collateral
+ * that has already been handed back. The subgraph's own status would answer this too, but it
+ * catches up a few blocks after the withdraw lands — which is precisely the window in which a
+ * returned LP would be shown as collateral. Undefined until the read arrives: the value that
+ * depends on this answer is better withheld than guessed.
+ */
+export function isOpenOnChain(position: OnChainPosition | undefined): boolean | undefined {
+  if (!position) return undefined;
+  return position.status === STATUS_ACTIVE || position.status === STATUS_BORROWED;
+}
 
 /**
  * The stored position, which is where the pair, the LP type and the deposit block come from.
