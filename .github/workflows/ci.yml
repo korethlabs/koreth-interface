@@ -29,6 +29,17 @@ jobs:
           submodules: recursive
           path: core
 
+      # On the current runner image /mnt is not a separate disk — it lives on the root
+      # filesystem, which ships ~98% full. The 12G swapfile below therefore lands on / and left
+      # only ~1.5G free, so npm ci filled the disk and the runner agent (which also writes to /)
+      # was killed mid-step with its logs lost. Reclaim the big unused toolchains first so both
+      # the swapfile and the install have room.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       # via-IR compilation is memory-hungry and the 2-core/7GB runner OOMs without headroom.
       - name: Add swap space
         run: |
@@ -62,7 +73,7 @@ jobs:
           name: preinstall-diag
           path: diag.txt
 
-      - run: npm ci --ignore-scripts
+      - run: npm ci
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
