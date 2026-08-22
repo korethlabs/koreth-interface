@@ -7,6 +7,7 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
+import {positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {isPositionOpen, type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -147,6 +148,7 @@ function PositionCard({
     args: [owner, deployments.lendingEngine],
   });
   const collateral = usePositionValue(id);
+  const onChain = useOnChainPosition(id);
 
   // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
   // model rate at the pool's current utilization. Shared across every collateral type now.
@@ -177,7 +179,9 @@ function PositionCard({
   return (
     <div className="card p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Position #{position.id}</h2>
+        {/* Named by what it holds rather than by its sequential id, which tells the user nothing
+            about which of their positions they are looking at. */}
+        <h2 className="text-lg font-semibold">{positionTitle(onChain, position.id)}</h2>
         <span className="text-sm text-[var(--muted-strong)] capitalize">{position.status}</span>
       </div>
 

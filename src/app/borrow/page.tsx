@@ -7,6 +7,7 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
+import {LP_TYPE_V2, LP_TYPE_V3, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {isPositionOpen, type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
@@ -14,7 +15,7 @@ import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
 import {UsdValue} from '@/components/UsdValue';
 import {tokenInfo} from '@/lib/tokens';
-import {V3_NFT_MANAGER, V3_FEE, nftManagerAbi} from '@/lib/v3';
+import {V3_NFT_MANAGER, V3_FEE, isFullRange, nftManagerAbi} from '@/lib/v3';
 
 const LP_DECIMALS = 18;
 const LP_COLOR = '#8b93ff';
@@ -45,10 +46,6 @@ function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean 
   if (a !== weth && b !== weth) return false;
   return V3_ELIGIBLE_QUOTES.includes(a === weth ? b : a);
 }
-
-// ILPAdapter.LPType, the discriminator LPOracleHub routes on to pick the per-protocol oracle.
-const LP_TYPE_V2 = 0;
-const LP_TYPE_V3 = 1;
 
 // The hub is read off PositionManager rather than from deployments.json so the price shown is by
 // construction the one the protocol will use: PositionManager.getPositionValue asks this same hub,
@@ -366,7 +363,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
       const [, , token0, token1, fee, , , liquidity] = e.p;
       return isEligibleV3Pair(token0, token1, Number(fee)) && liquidity > 0n;
     })
-    .map(({id, p}) => ({id, token0: p[2], token1: p[3]}));
+    .map(({id, p}) => ({id, token0: p[2], token1: p[3], fee: Number(p[4]), tickLower: p[5], tickUpper: p[6]}));
 
   const {data: approvedAll, refetch: refetchApproval} = useReadContract({
     address: V3_NFT_MANAGER,
@@ -428,14 +425,21 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
             </div>
           )}
           <div>
-            {eligible.map(({id, token0, token1}, i) => (
+            {eligible.map(({id, token0, token1, fee, tickLower, tickUpper}, i) => (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
                   <p className="text-sm leading-tight font-semibold">
+                    {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol} · V3 #{id.toString()}
+                  </p>
+                  <p className="text-sm leading-tight">
                     <UsdValue value={valueResults?.[i]?.result as bigint | undefined} isError={valueResults?.[i]?.status === 'failure'} />
                   </p>
+                  {/* The pair, fee tier and range all come out of the positions() call already made
+                      to filter the list, so this costs no extra reads. Whether the range is
+                      currently in play is deliberately not shown: that needs the pool's spot tick,
+                      the manipulable figure the protocol's own oracle refuses to price from. */}
                   <p className="text-xs text-[var(--muted)]">
-                    NFT #{id.toString()} · {tokenInfo(token0).symbol}/{tokenInfo(token1).symbol}
+                    {fee / 10_000}% fee · {isFullRange(tickLower, tickUpper) ? 'full range' : 'concentrated range'}
                   </p>
                   <p className="text-xs text-[var(--muted)]">
                     Borrow up to{' '}
@@ -502,8 +506,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const collateral = usePositionValue(id);
   // The LP type comes off the position itself rather than from the subgraph's label, so the risk
   // parameters shown are keyed to what the protocol recorded rather than to a name match.
-  const {data: onChainPosition} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getPosition', args: [id]});
-  const pos = onChainPosition as {lpType: number; depositBlock: bigint} | undefined;
+  const pos = useOnChainPosition(id);
   const config = useCollateralConfig(pos?.lpType);
   const cooldown = useBorrowCooldown(pos?.depositBlock);
 
@@ -534,8 +537,10 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         <div className="flex items-center gap-3">
           <TokenChip label={symbol} />
           <div>
-            <p className="font-semibold leading-tight">Position #{position.id}</p>
-            <p className="text-xs text-[var(--muted)]">{position.lpType} · borrow {symbol}</p>
+            {/* "Position #3" says nothing about what is actually locked up. A user with several
+                positions tells them apart by the pair and, for V3, by the NFT they minted. */}
+            <p className="font-semibold leading-tight">{positionTitle(pos, position.id)}</p>
+            <p className="text-xs text-[var(--muted)]">Position #{position.id} · borrow {symbol}</p>
           </div>
         </div>
         <div className="text-right">

@@ -5,6 +5,17 @@ export const V3_FEE = 3000; // 0.3% — matches the whitelisted WETH/USDC pool
 export const V3_TICK_LOWER = -887220;
 export const V3_TICK_UPPER = 887220;
 
+/**
+ * Whether a position spans the whole price curve, which is what distinguishes an LP that keeps
+ * earning at any price from one that stops when the market leaves its band.
+ *
+ * The bounds above are the widest ticks that exist at tickSpacing 60, and only the 0.3% tier is
+ * accepted as collateral, so comparing against them is exact for every position this app can see.
+ */
+export function isFullRange(tickLower: number, tickUpper: number): boolean {
+  return tickLower <= V3_TICK_LOWER && tickUpper >= V3_TICK_UPPER;
+}
+
 export const nftManagerAbi = [
   {
     type: 'function',
