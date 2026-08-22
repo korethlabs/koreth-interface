@@ -46,11 +46,21 @@ jobs:
 
       - name: Resource snapshot (pre npm ci)
         run: |
-          echo "## nproc"; nproc
-          echo "## free -h"; free -h
-          echo "## swapon"; swapon --show || true
-          echo "## df -h /"; df -h /
-          echo "## df -h /mnt"; df -h /mnt || true
+          { echo "## nproc"; nproc
+            echo "## free -h"; free -h
+            echo "## swapon"; swapon --show || true
+            echo "## df -h /"; df -h /
+            echo "## df -h /mnt"; df -h /mnt || true
+            echo "## npm/node"; node -v; npm -v
+          } | tee diag.txt
+
+      # Uploaded before npm ci so it survives even when the runner is hard-killed during install
+      # (step logs are lost in that case, but artifacts use separate storage).
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: preinstall-diag
+          path: diag.txt
 
       - run: npm ci --ignore-scripts
 
