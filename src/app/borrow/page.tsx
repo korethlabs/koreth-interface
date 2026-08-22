@@ -18,6 +18,9 @@ import {V3_NFT_MANAGER, V3_FEE, nftManagerAbi} from '@/lib/v3';
 const LP_DECIMALS = 18;
 const LP_COLOR = '#8b93ff';
 
+/** Share of a position's borrowing capacity the interface offers, in bps. See `available` below. */
+const BORROW_HEADROOM_BPS = 9_900n;
+
 // Quote tokens whose WETH V3 pool is whitelisted as collateral on-chain. Only pairs listed here are
 // shown as depositable: deposit() reverts COLLATERAL_NOT_ENABLED for a pool ProtocolCore hasn't
 // whitelisted, so this list must track the on-chain whitelist. To add WETH/DAI or WETH/USDT, first
@@ -453,11 +456,16 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const cooldown = useBorrowCooldown(id);
 
   const debtBn = (debt as bigint) ?? 0n;
-  // getMaxBorrow is the position's total borrowing capacity, and borrow() checks
-  // `currentDebt + amount <= maxBorrow`. Showing it raw as "Available" made the Max button
-  // always revert EXCEEDS_MAX_LTV on any position that already had debt.
+  // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
+  // checks `currentDebt + amount <= maxBorrow`, so existing debt has to come off it first.
   const capacity = (maxBorrow as bigint) ?? 0n;
-  const available = capacity > debtBn ? capacity - debtBn : 0n;
+  const headroom = capacity > debtBn ? capacity - debtBn : 0n;
+  // borrow() re-derives both sides of the check at execution: it accrues interest first, so the
+  // debt is larger than the one read here, and it re-prices the LP through the oracle, so the
+  // capacity may be smaller. Offering the exact headroom therefore reverts EXCEEDS_MAX_LTV
+  // whenever either moves in the interval between the read and the block that mines the borrow.
+  // Aave's interface holds back the same 1% of its max borrow, for the same reason.
+  const available = (headroom * BORROW_HEADROOM_BPS) / 10_000n;
   const parsed = parseAmount(amount, decimals);
   const valid = parsed > 0n && parsed <= available;
   const hf = health as bigint | undefined;
