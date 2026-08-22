@@ -355,12 +355,14 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
   // The V3 oracle keys off the NFT manager address and tokenId, so amount is passed as 0.
   const hub = useOracleHub();
   const {data: valueResults} = useReadContracts({
-    contracts: eligible.map(({id}) => ({
-      address: hub as `0x${string}`,
-      abi: lpOracleHubAbi,
-      functionName: 'getRawPrice' as const,
-      args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
-    })),
+    contracts: hub
+      ? eligible.map(({id}) => ({
+          address: hub,
+          abi: lpOracleHubAbi,
+          functionName: 'getRawPrice' as const,
+          args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
+        }))
+      : [],
     query: {enabled: !!hub && eligible.length > 0},
   });
 
