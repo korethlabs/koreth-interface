@@ -131,8 +131,10 @@ function formatLiquidationDistance(hf: bigint | undefined): string {
   if (drop < 10n) return 'Liquidated by a fall of under 0.1%';
   // Truncated rather than rounded to the nearest tenth, for the same reason the bps figure is:
   // rounding 13.36% up to 13.4% would name a fall the position in fact survives, and the number is
-  // being read as the point at which the collateral is taken.
-  return `Liquidated if the LP falls ${(Number(drop / 10n) / 10).toFixed(1)}%`;
+  // being read as the point at which the collateral is taken. "Over" rather than "at" for the same
+  // reason at the other end — isLiquidatable needs the factor strictly below 1.00, so a fall of
+  // exactly the distance shown still clears, and a truncated figure is in any case a lower bound.
+  return `Liquidated by a fall of over ${(Number(drop / 10n) / 10).toFixed(1)}%`;
 }
 
 function healthColor(hf: bigint | undefined): string {
@@ -790,16 +792,21 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             describes it. The two situations worth a sentence are the ones that end in a disabled
             button, where the user is owed the reason, and the pool running dry, which is the bound
             nothing else on the card hints at. */}
-        {liquidityBound ? (
+        {available === 0n ? (
           <p className="text-xs text-[var(--muted-strong)]">
-            {available === 0n
-              ? 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'
-              : 'Limited by the cash left in this pool rather than by your collateral. More becomes available as loans are repaid.'}
+            {/* Both bounds are reported when both are spent, rather than letting the tie fall to
+                one of them: "deposit more collateral" is advice that does nothing against a pool
+                with nothing to lend, and the user would follow it and find the button still dead. */}
+            {fromCapacity === 0n && liquidityCap === 0n
+              ? 'You have drawn everything this collateral supports, and this pool has no cash left to lend. Repaying returns cash to the pool and frees capacity at the same time.'
+              : fromCapacity === 0n
+                ? 'You have drawn everything this collateral supports. Repay some debt, or deposit more collateral, to borrow again.'
+                : 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'}
           </p>
-        ) : available === 0n ? (
+        ) : liquidityBound ? (
           <p className="text-xs text-[var(--muted-strong)]">
-            You have drawn everything this collateral supports. Repay some debt, or deposit more
-            collateral, to borrow again.
+            Limited by the cash left in this pool rather than by your collateral. More becomes
+            available as loans are repaid.
           </p>
         ) : null}
         {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
