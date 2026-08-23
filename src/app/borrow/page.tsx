@@ -9,7 +9,8 @@ import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hook
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
-import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {LIQUIDATION_HEALTH_FACTOR, NO_DEBT_HEALTH_FACTOR, borrowingCapacityUsd, liquidationDropBps, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {usePoolMarket} from '@/hooks/useLendingPool';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
@@ -100,13 +101,44 @@ function formatTokenAmount(raw: bigint, token: string): string {
   return `${fmt(n, n >= 1_000 ? 2 : 4)} ${symbol}`;
 }
 
+// ∞ is reserved for the debt-free sentinel itself, so it cannot be read as "no debt" by a position
+// carrying a dust balance against whole collateral, whose factor is merely enormous. Those are
+// capped instead: past a certain point the digits stop distinguishing anything.
 function formatHealth(hf: bigint | undefined): string {
   if (hf === undefined) return '—';
-  if (hf > 10n ** 30n) return '∞';
+  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
+  if (hf > 1_000n * 10n ** 18n) return '> 1000';
   return Number(formatUnits(hf, 18)).toFixed(2);
 }
+/**
+ * The health factor restated as the fall in the LP that would reach the liquidation line, which is
+ * the form of it a borrower can act on. Kept beside the factor rather than replacing it: the ratio
+ * is the figure the protocol and every other interface speak in.
+ */
+function formatLiquidationDistance(hf: bigint | undefined): string {
+  if (hf === undefined) return '—';
+  const drop = liquidationDropBps(hf);
+  if (drop === undefined) return 'No debt to liquidate';
+  // The two exact cases are decided on the factor itself rather than on the rounded distance, which
+  // cannot tell them apart. isLiquidatable clears a position at exactly 1.00, so the boundary is
+  // not yet executable, and saying a liquidation can be called where it would revert is the kind of
+  // claim this page is being made not to make.
+  if (hf < LIQUIDATION_HEALTH_FACTOR) return 'Liquidatable now';
+  if (hf === LIQUIDATION_HEALTH_FACTOR) return 'Liquidated by any further LP fall';
+  // Below a tenth of a percent the figure has to be described rather than printed: truncating it
+  // would render a real distance as `0.0%`, which reads as no fall being needed at all — the very
+  // claim the line above exists to reserve for the position that is actually on the line.
+  if (drop < 10n) return 'Liquidated by a fall of under 0.1%';
+  // Truncated rather than rounded to the nearest tenth, for the same reason the bps figure is:
+  // rounding 13.36% up to 13.4% would name a fall the position in fact survives, and the number is
+  // being read as the point at which the collateral is taken. "Over" rather than "at" for the same
+  // reason at the other end — isLiquidatable needs the factor strictly below 1.00, so a fall of
+  // exactly the distance shown still clears, and a truncated figure is in any case a lower bound.
+  return `Liquidated by a fall of over ${(Number(drop / 10n) / 10).toFixed(1)}%`;
+}
+
 function healthColor(hf: bigint | undefined): string {
-  if (hf === undefined || hf > 10n ** 30n) return 'text-[var(--accent)]';
+  if (hf === undefined || hf === NO_DEBT_HEALTH_FACTOR) return 'text-[var(--accent)]';
   const v = Number(formatUnits(hf, 18));
   if (v < 1.1) return 'text-[var(--danger)]';
   if (v < 1.5) return 'text-[var(--warning)]';
@@ -564,6 +596,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
+  const market = usePoolMarket(position.pool.address as `0x${string}`, position.pool.borrowAsset as `0x${string}`);
 
   // Polled: debt accrues every block and both the health factor and the capacity are re-derived
   // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
@@ -600,8 +633,26 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // exactly where it is needed: a position already near its limit. Clamped at zero, since 99% of
   // capacity can be below a debt that has accrued past it.
   const drawable = capacityRaw === undefined ? undefined : (capacityRaw * BORROW_HEADROOM_BPS) / 10_000n;
-  const available =
+  const fromCapacity =
     debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
+  // The second bound, and the one the LTV arithmetic above knows nothing about: borrow() ends in
+  // pool.transferOut, which requires the amount to be at most the borrow asset actually held by the
+  // pool. A position with capacity to spare in a pool whose cash borrowers have already taken
+  // reverts INSUFFICIENT_LIQUIDITY, so offering the LTV headroom alone advertises a loan the pool
+  // cannot fund. Held back by the same 1% as the capacity, for a different reason: the cash can be
+  // drawn down by a borrow in an earlier block.
+  const liquidityCap =
+    market === undefined ? undefined : (market.liquidity * BORROW_HEADROOM_BPS) / 10_000n;
+  const available =
+    fromCapacity === undefined || liquidityCap === undefined
+      ? undefined
+      : fromCapacity < liquidityCap
+        ? fromCapacity
+        : liquidityCap;
+  // Which of the two bounds is binding. They are the same greyed-out button and entirely different
+  // situations: one is undone by repaying or depositing, the other only by someone else repaying.
+  // Ties count as capacity-bound, since that is the side the user can act on.
+  const liquidityBound = fromCapacity !== undefined && liquidityCap !== undefined && liquidityCap < fromCapacity;
   const parsed = parseAmount(amount, decimals);
   const hf = healthError ? undefined : (health as bigint | undefined);
   const projected =
@@ -655,11 +706,16 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               </>
             )}
           </p>
-          <p className="text-xs text-[var(--muted)]">Liquidation below 1.00</p>
+          {/* Describes the borrow being prepared once there is an amount, since that is the
+              exposure the user is deciding on. Not fallen back to the current distance when the
+              projection cannot be computed: that figure is real but answers the question the user
+              stopped asking as soon as they typed an amount, and it always reads safer than the
+              one they are about to accept. */}
+          <p className="text-xs text-[var(--muted)]">{formatLiquidationDistance(parsed > 0n ? projected : hf)}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-sm border-y border-[var(--border)] py-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Collateral</p>
           {/* Priced live, from the same call the health factor above divides by. The subgraph's
@@ -671,6 +727,15 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         <div>
           <p className="text-[var(--muted)] text-xs">Debt</p>
           <p className="tabular-nums">{debtRaw === undefined ? '—' : fmt(Number(formatUnits(debtRaw, decimals)))}</p>
+        </div>
+        <div>
+          {/* The price of the loan, on the screen where the amount is chosen rather than on the
+              portfolio page after it has been signed. It moves with the pool's utilization, so a
+              borrow by someone else changes what this one costs. */}
+          <p className="text-[var(--muted)] text-xs">Borrow APR</p>
+          <p className="tabular-nums">
+            {market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
+          </p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Available</p>
@@ -715,10 +780,35 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               refetchHealth();
               refetchMax();
               refetchPos();
+              // The borrow just took cash out of the pool and moved its utilization, so the bound
+              // on the next one and the rate it would pay are both stale until this lands.
+              market?.refetch();
               onDone();
             }}
           />
         </div>
+        {/* Nothing is said when the collateral is the binding constraint and there is still room to
+            draw: that is the ordinary case, and `Available` next to the health factor already
+            describes it. The two situations worth a sentence are the ones that end in a disabled
+            button, where the user is owed the reason, and the pool running dry, which is the bound
+            nothing else on the card hints at. */}
+        {available === 0n ? (
+          <p className="text-xs text-[var(--muted-strong)]">
+            {/* Both bounds are reported when both are spent, rather than letting the tie fall to
+                one of them: "deposit more collateral" is advice that does nothing against a pool
+                with nothing to lend, and the user would follow it and find the button still dead. */}
+            {fromCapacity === 0n && liquidityCap === 0n
+              ? 'Nothing can be drawn right now: this collateral is at the limit it can safely support, and the pool has no cash left to lend. Depositing more collateral raises the first; the pool refills as loans are repaid.'
+              : fromCapacity === 0n
+                ? 'This collateral is at the limit it can safely support. Repaying debt, or depositing more collateral, raises it.'
+                : 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'}
+          </p>
+        ) : liquidityBound ? (
+          <p className="text-xs text-[var(--muted-strong)]">
+            Limited by the cash left in this pool rather than by your collateral. More becomes
+            available as loans are repaid.
+          </p>
+        ) : null}
         {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
           <p className="text-xs text-[var(--muted)]">
             Borrowing unlocks in {cooldown.blocksLeft.toString()} block

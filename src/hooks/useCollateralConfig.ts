@@ -106,3 +106,38 @@ export function projectedHealthFactor(
   if (config.maxLtv === 0n || totalDebt === 0n) return undefined;
   return (config.liquidationThreshold * maxBorrow * 10n ** 18n) / (config.maxLtv * totalDebt);
 }
+
+/** The health factor of a debt-free position, as getHealthFactor reports it. */
+export const NO_DEBT_HEALTH_FACTOR = 2n ** 256n - 1n;
+
+/** Health factor at which a position becomes liquidatable — strictly below, as isLiquidatable checks. */
+export const LIQUIDATION_HEALTH_FACTOR = 10n ** 18n;
+
+/**
+ * How far the collateral can fall before the position becomes liquidatable, in bps of its current
+ * value.
+ *
+ * getHealthFactor divides the haircut collateral value by the debt, and the debt does not move with
+ * the LP price, so the factor is linear in that value: multiplying the collateral by `1/hf` lands
+ * exactly on 1.00. This is the same fact the health factor states, expressed in the quantity the
+ * borrower is actually exposed to — a factor of 1.15 and "a 13% fall liquidates you" are the same
+ * sentence, and only one of them can be acted on without doing arithmetic first.
+ *
+ * Undefined for a position with no debt, which getHealthFactor answers as exactly uint256.max:
+ * there is no price at which it can be liquidated, which is different from a fall of zero. Matched
+ * exactly rather than by an "implausibly large" cutoff, which a real position carrying dust debt
+ * against whole collateral can exceed — and would then be described as having nothing to liquidate.
+ */
+export function liquidationDropBps(hf: bigint | undefined): bigint | undefined {
+  if (hf === undefined) return undefined;
+  if (hf === NO_DEBT_HEALTH_FACTOR) return undefined;
+  // At or past the line already: no fall is needed, rather than a negative distance. isLiquidatable
+  // clears at exactly 1.00, so this zero covers both a position already under and one standing on
+  // the threshold; the two are distinguished by the caller, which still has the factor itself.
+  if (hf <= LIQUIDATION_HEALTH_FACTOR) return 0n;
+  // Rounded down, which is the direction that keeps the answer safe to act on: the surviving
+  // fraction is rounded up instead, so the fall reported is at most the one that actually reaches
+  // the line. Rounding a distance up would tell a borrower they still have room they do not have.
+  const survives = (BPS * LIQUIDATION_HEALTH_FACTOR + hf - 1n) / hf;
+  return survives >= BPS ? 0n : BPS - survives;
+}

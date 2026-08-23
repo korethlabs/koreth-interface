@@ -14,6 +14,9 @@ src/generated/
 .env.local
 .env*.local
 
+# Working notes — local research log, not shipped docs (same convention as koreth-v1-core)
+docs/
+
 # OS / IDE
 .DS_Store
 .idea/

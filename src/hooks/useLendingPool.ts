@@ -2,7 +2,7 @@
 
 import {useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi} from 'viem';
-import {lendingPoolAbi, protocolCoreAbi} from '@/generated/abis';
+import {interestRateModelAbi, lendingPoolAbi, protocolCoreAbi} from '@/generated/abis';
 import {deployments} from '@/generated/deployments';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 
@@ -70,6 +70,75 @@ export function useProtocolPaused(): boolean | undefined {
     query: {refetchInterval: LIVE_REFETCH_MS},
   });
   return isError ? undefined : (data as boolean | undefined);
+}
+
+/**
+ * What one pool charges to borrow from it, and what it can actually lend right now.
+ *
+ * Both figures bound a borrow rather than decorate it. `transferOut` requires the amount to be at
+ * most the borrow asset sitting in the pool and reverts INSUFFICIENT_LIQUIDITY otherwise, so a
+ * position with capacity to spare still cannot draw against cash borrowers have already taken. The
+ * rate is the price of the debt the borrower is about to take on, which is the one figure a lending
+ * interface cannot reasonably omit from the screen where the amount is chosen.
+ */
+export type PoolMarket = {
+  /** Annualized borrow rate in bps, as the rate model reports it at the pool's utilization. */
+  borrowAprBps: bigint;
+  /** Borrow asset held by the pool: the ceiling on any single borrow, whatever the LTV allows. */
+  liquidity: bigint;
+  /** Pool utilization in bps, as the pool last recorded it. */
+  utilization: bigint;
+  /**
+   * Re-reads the pool, and with it the utilization the rate is keyed on. Polling alone would leave
+   * both behind for up to one interval after the caller's own borrow or repayment — exactly the
+   * transaction that moved them, and the liquidity is what bounds the next one.
+   */
+  refetch: () => void;
+};
+
+export function usePoolMarket(
+  pool: `0x${string}`,
+  borrowAsset: `0x${string}`,
+): PoolMarket | undefined {
+  const {data, isError, refetch: refetchPool} = useReadContracts({
+    contracts: [
+      {address: pool, abi: lendingPoolAbi, functionName: 'getPoolState'},
+      {address: pool, abi: lendingPoolAbi, functionName: 'interestRateModel'},
+      {address: borrowAsset, abi: erc20Abi, functionName: 'balanceOf', args: [pool]},
+    ],
+    // Every borrow and repayment moves both the cash on hand and the rate derived from utilization,
+    // so neither is pinned to the moment the page mounted.
+    query: {refetchInterval: LIVE_REFETCH_MS},
+  });
+
+  const state = isError ? undefined : data?.[0].result;
+  const irm = isError ? undefined : data?.[1].result;
+  const liquidity = isError ? undefined : data?.[2].result;
+
+  // The rate model is addressed by the pool rather than configured here, so it takes a second round
+  // trip: its address is itself one of the reads above.
+  const {data: apr, isError: aprError} = useReadContract({
+    address: irm,
+    abi: interestRateModelAbi,
+    functionName: 'getBorrowRateAPR',
+    args: state === undefined ? undefined : [state.utilization],
+    query: {enabled: irm !== undefined && state !== undefined, refetchInterval: LIVE_REFETCH_MS},
+  });
+
+  if (state === undefined || liquidity === undefined) return undefined;
+  // A rate that failed to read is not a free loan, and a liquidity figure without one describes
+  // half a decision — so the whole market reads as unknown until both have landed.
+  if (aprError || apr === undefined) return undefined;
+
+  return {
+    borrowAprBps: apr as bigint,
+    liquidity,
+    utilization: state.utilization,
+    // Only the pool read. The rate query is keyed on the utilization that read returns, so it
+    // re-runs on its own once a new one lands; refetching it here would re-ask the rate model
+    // about the utilization from this render, which is the figure being replaced.
+    refetch: refetchPool,
+  };
 }
 
 export function usePoolLenderState(

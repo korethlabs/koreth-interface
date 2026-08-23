@@ -4,11 +4,12 @@ import {useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
+import {NO_DEBT_HEALTH_FACTOR} from '@/hooks/useCollateralConfig';
 import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
-import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
+import {usePoolLenderState, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
 import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -25,10 +26,13 @@ function parseAmount(v: string, decimals: number): bigint {
   }
 }
 
-// getHealthFactor returns uint256.max when there's no debt; show ∞ for very large values.
+// getHealthFactor returns exactly uint256.max when there is no debt, and that is the only case ∞
+// stands for: a position carrying dust against whole collateral also reaches an enormous factor,
+// and reading it as debt-free would be wrong. Those are capped rather than printed in full.
 function formatHealth(hf: bigint | undefined): string {
   if (hf === undefined) return '—';
-  if (hf > 10n ** 30n) return '∞';
+  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
+  if (hf > 1_000n * 10n ** 18n) return '> 1000';
   return Number(formatUnits(hf, 18)).toFixed(2);
 }
 
@@ -186,20 +190,11 @@ function PositionCard({
   const collateral = usePositionValue(id);
   const {position: onChain, refetch: refetchOnChain} = useOnChainPosition(id);
 
-  // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
-  // model rate at the pool's current utilization. Shared across every collateral type now.
-  const poolAddr = position.pool.address as `0x${string}`;
-  const {data: poolState} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'getPoolState'});
-  const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
-  const irmAddr = irm as `0x${string}` | undefined;
-  const util = (poolState as {utilization: bigint} | undefined)?.utilization ?? 0n;
-  const {data: borrowAprBps} = useReadContract({
-    address: irmAddr,
-    abi: interestRateModelAbi,
-    functionName: 'getBorrowRateAPR',
-    args: [util],
-    query: {enabled: !!irmAddr && poolState !== undefined},
-  });
+  // The rate this position is paying, from the same hook the borrow page prices a new draw with, so
+  // the two pages cannot quote different costs for the same debt. Previously read inline here with
+  // the utilization coalesced to zero, which showed the model's base rate — a real, confident,
+  // wrong number — whenever the pool state had not landed yet.
+  const market = usePoolMarket(position.pool.address as `0x${string}`, asset);
 
   // An errored read counts as missing rather than as its last cached answer. Zero is not a safe
   // stand-in here: it is what decides the card offers a withdraw instead of a repay, and withdraw()
@@ -216,6 +211,9 @@ function PositionCard({
     // Includes the position record: withdraw() closes it, and the collateral cell gates on that
     // status rather than on the subgraph's.
     refetchOnChain();
+    // A repayment returns cash to the pool and lowers its utilization, so the rate this position
+    // is quoted has changed as a result of the very action being confirmed.
+    market?.refetch();
     onDone();
   };
 
@@ -257,7 +255,7 @@ function PositionCard({
         />
         <Stat
           label="Borrow APR"
-          value={borrowAprBps === undefined ? '—' : `${(Number(borrowAprBps) / 100).toFixed(2)}%`}
+          value={market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
         />
         <Stat label="Health" value={formatHealth(healthError ? undefined : (health as bigint | undefined))} />
         <Stat
