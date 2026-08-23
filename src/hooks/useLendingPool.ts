@@ -108,18 +108,22 @@ export function usePoolLenderState(
   }
 
   const totalSupply = state.totalSupply;
-  const isEmpty = totalShares === 0n;
-  // A pool with shares outstanding but nothing behind them is the insolvent state supply() rejects
-  // as MARKET_INSOLVENT. There is no share price to convert with, and reporting zero would say the
-  // position is worth nothing rather than that it cannot be valued.
-  const priced = !isEmpty && totalSupply > 0n;
+  // Shares outstanding with nothing behind them is the insolvent state supply() rejects as
+  // MARKET_INSOLVENT. There is no share price to convert a balance with, and every action reachable
+  // from here reverts, so it is served as unread: zeroes would say the position is worth nothing
+  // rather than that it cannot be valued, and would leave the pool looking empty but usable.
+  if (totalShares > 0n && totalSupply === 0n) return undefined;
 
-  const redeemable = priced ? (shares * totalSupply) / totalShares : 0n;
-  const liquidityCapShares = priced
-    ? (((available * WITHDRAW_HEADROOM_BPS) / BPS) * totalShares) / totalSupply
-    : 0n;
+  // No shares outstanding, so nothing to price and nothing held — the only path out of this state
+  // is the first deposit, which none of the figures below bound.
+  const isEmpty = totalShares === 0n;
+
+  const redeemable = isEmpty ? 0n : (shares * totalSupply) / totalShares;
+  const liquidityCapShares = isEmpty
+    ? 0n
+    : (((available * WITHDRAW_HEADROOM_BPS) / BPS) * totalShares) / totalSupply;
   const withdrawableShares = shares < liquidityCapShares ? shares : liquidityCapShares;
-  const withdrawable = priced ? (withdrawableShares * totalSupply) / totalShares : 0n;
+  const withdrawable = isEmpty ? 0n : (withdrawableShares * totalSupply) / totalShares;
 
   return {
     shares,
@@ -129,7 +133,7 @@ export function usePoolLenderState(
     // Burning the exact cap rather than converting it back keeps a full exit exact: rounding the
     // amount down to shares and up again would leave a share behind every time.
     sharesFor: (amount) =>
-      !priced ? 0n : amount >= withdrawable ? withdrawableShares : (amount * totalShares) / totalSupply,
+      isEmpty ? 0n : amount >= withdrawable ? withdrawableShares : (amount * totalShares) / totalSupply,
     isEmpty,
     deadShares,
     totalSupply,
