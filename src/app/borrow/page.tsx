@@ -798,9 +798,9 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
                 one of them: "deposit more collateral" is advice that does nothing against a pool
                 with nothing to lend, and the user would follow it and find the button still dead. */}
             {fromCapacity === 0n && liquidityCap === 0n
-              ? 'You have drawn everything this collateral supports, and this pool has no cash left to lend. Repaying returns cash to the pool and frees capacity at the same time.'
+              ? 'Nothing can be drawn right now: this collateral is at the limit it can safely support, and the pool has no cash left to lend. Repayments lift both.'
               : fromCapacity === 0n
-                ? 'You have drawn everything this collateral supports. Repay some debt, or deposit more collateral, to borrow again.'
+                ? 'This collateral is at the limit it can safely support. Repaying debt, or depositing more collateral, raises it.'
                 : 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'}
           </p>
         ) : liquidityBound ? (
