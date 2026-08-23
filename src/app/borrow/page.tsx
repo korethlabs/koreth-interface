@@ -124,7 +124,10 @@ function formatLiquidationDistance(hf: bigint | undefined): string {
   // when it would revert is the kind of claim this page is being made not to make.
   if (hf < LIQUIDATION_HEALTH_FACTOR) return 'Liquidatable now';
   if (drop === 0n) return 'Liquidated by any further LP fall';
-  return `Liquidated if the LP falls ${(Number(drop) / 100).toFixed(1)}%`;
+  // Truncated rather than rounded to the nearest tenth, for the same reason the bps figure is:
+  // rounding 13.36% up to 13.4% would name a fall the position in fact survives, and the number is
+  // being read as the point at which the collateral is taken.
+  return `Liquidated if the LP falls ${(Number(drop / 10n) / 10).toFixed(1)}%`;
 }
 
 function healthColor(hf: bigint | undefined): string {
@@ -695,9 +698,12 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               </>
             )}
           </p>
-          {/* Follows the projection when there is one: the question the user is asking is what the
-              borrow they are about to sign does to their exposure, not what yesterday's does. */}
-          <p className="text-xs text-[var(--muted)]">{formatLiquidationDistance(projected ?? hf)}</p>
+          {/* Describes the borrow being prepared once there is an amount, since that is the
+              exposure the user is deciding on. Not fallen back to the current distance when the
+              projection cannot be computed: that figure is real but answers the question the user
+              stopped asking as soon as they typed an amount, and it always reads safer than the
+              one they are about to accept. */}
+          <p className="text-xs text-[var(--muted)]">{formatLiquidationDistance(parsed > 0n ? projected : hf)}</p>
         </div>
       </div>
 
@@ -766,6 +772,9 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               refetchHealth();
               refetchMax();
               refetchPos();
+              // The borrow just took cash out of the pool and moved its utilization, so the bound
+              // on the next one and the rate it would pay are both stale until this lands.
+              market?.refetch();
               onDone();
             }}
           />

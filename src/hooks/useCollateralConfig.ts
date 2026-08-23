@@ -135,5 +135,9 @@ export function liquidationDropBps(hf: bigint | undefined): bigint | undefined {
   // clears at exactly 1.00, so this zero covers both a position already under and one standing on
   // the threshold; the two are distinguished by the caller, which still has the factor itself.
   if (hf <= LIQUIDATION_HEALTH_FACTOR) return 0n;
-  return BPS - (BPS * LIQUIDATION_HEALTH_FACTOR) / hf;
+  // Rounded down, which is the direction that keeps the answer safe to act on: the surviving
+  // fraction is rounded up instead, so the fall reported is at most the one that actually reaches
+  // the line. Rounding a distance up would tell a borrower they still have room they do not have.
+  const survives = (BPS * LIQUIDATION_HEALTH_FACTOR + hf - 1n) / hf;
+  return survives >= BPS ? 0n : BPS - survives;
 }

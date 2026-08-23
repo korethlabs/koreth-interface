@@ -211,6 +211,9 @@ function PositionCard({
     // Includes the position record: withdraw() closes it, and the collateral cell gates on that
     // status rather than on the subgraph's.
     refetchOnChain();
+    // A repayment returns cash to the pool and lowers its utilization, so the rate this position
+    // is quoted has changed as a result of the very action being confirmed.
+    market?.refetch();
     onDone();
   };
 
