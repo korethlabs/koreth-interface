@@ -8,6 +8,7 @@ import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {useV2Underlying} from '@/hooks/useV2Underlying';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
@@ -18,7 +19,6 @@ import {UsdValue} from '@/components/UsdValue';
 import {tokenInfo} from '@/lib/tokens';
 import {V3_NFT_MANAGER, V3_FEE, isFullRange, nftManagerAbi} from '@/lib/v3';
 
-const LP_DECIMALS = 18;
 const LP_COLOR = '#8b93ff';
 
 /** Share of a position's borrowing capacity the interface offers, in bps. See `available` below. */
@@ -87,6 +87,17 @@ function parseAmount(v: string, decimals: number): bigint {
 
 function fmt(n: number, max = 2): string {
   return n.toLocaleString('en-US', {maximumFractionDigits: max});
+}
+
+/**
+ * A token amount with its symbol, e.g. "5 WETH". The precision follows the size rather than the
+ * token's decimals: two places would round a fraction of an ETH to "0.00", and four would pad a
+ * five-figure USDC amount with digits that carry nothing.
+ */
+function formatTokenAmount(raw: bigint, token: string): string {
+  const {symbol, decimals} = tokenInfo(token);
+  const n = Number(formatUnits(raw, decimals));
+  return `${fmt(n, n >= 1_000 ? 2 : 4)} ${symbol}`;
 }
 
 function formatHealth(hf: bigint | undefined): string {
@@ -240,6 +251,7 @@ function DepositV2Card({
   const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
   const balance = (lpBalance as bigint) ?? 0n;
+  const underlying = useV2Underlying(deployments.v2Pair, balance);
   const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
@@ -257,16 +269,19 @@ function DepositV2Card({
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       <div className="space-y-3">
-        {/* The USD value leads and the raw LP count is demoted beneath it. A WETH/USDC LP balance
-            reads as ~0.000086 because the pair's total supply is the geometric mean of a 6- and an
-            18-decimal reserve, so a five-figure position looks like dust. The count stays visible
-            because it is what a block explorer or Uniswap will show for the same balance. */}
+        {/* The USD value leads and the pair's two token amounts sit beneath it. The LP count itself
+            is not shown: a WETH/USDC balance reads as 0.000084 for a five-figure position, because
+            the pair's total supply is the geometric mean of a 6- and an 18-decimal reserve, so the
+            one number a user could check against what they deposited looked like dust. */}
         <div>
           <p className="text-xs text-[var(--muted)]">Your LP balance</p>
           <UsdValue value={lpUsd} isError={lpUsdError} className="text-2xl font-semibold tabular-nums" />
-          <p className="text-xs text-[var(--muted)] tabular-nums">
-            {Number(formatUnits(balance, LP_DECIMALS)).toFixed(6)} LP
-          </p>
+          {underlying && (
+            <p className="text-xs text-[var(--muted)] tabular-nums">
+              {formatTokenAmount(underlying.amount0, underlying.token0)} /{' '}
+              {formatTokenAmount(underlying.amount1, underlying.token1)}
+            </p>
+          )}
         </div>
 
         <BorrowingCapacity capacity={capacity} isError={lpUsdError} config={config} />
