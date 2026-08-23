@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useId, useMemo, useState} from 'react';
 import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
@@ -241,6 +241,68 @@ function useBorrowAssetChoice(pools: SubgraphPool[]) {
   return {borrowAsset, setBorrowAsset};
 }
 
+/**
+ * One pool, priced. Its own component because the rate and the liquidity are per-pool reads, and a
+ * hook cannot be called in a loop over a list whose length changes.
+ */
+function PoolOption({
+  pool,
+  group,
+  selected,
+  onSelect,
+}: {
+  pool: SubgraphPool;
+  group: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const market = usePoolMarket(pool.address as `0x${string}`, pool.borrowAsset as `0x${string}`);
+  // The same holdback the borrow card applies, so this cannot advertise a figure that screen will
+  // then refuse to offer. It is the pool's ceiling only: what this position can draw is also capped
+  // by its collateral, which does not exist yet at the point this choice is made.
+  const fundable = market === undefined ? undefined : (market.liquidity * BORROW_HEADROOM_BPS) / 10_000n;
+
+  return (
+    <label
+      className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+        selected
+          ? 'border-[var(--accent)] bg-[var(--accent)]/5'
+          : 'border-[var(--border)] hover:border-[var(--muted)]'
+      }`}
+    >
+      <input type="radio" name={group} checked={selected} onChange={onSelect} className="sr-only" />
+      <span
+        aria-hidden
+        className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
+          selected ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--muted)]'
+        }`}
+      />
+      <TokenChip label={pool.symbol} />
+      <span className="font-medium">{pool.symbol}</span>
+      <span className="ml-auto flex gap-5 text-right text-xs">
+        <span>
+          <span className="block text-[var(--muted)]">Borrow APR</span>
+          <span className="tabular-nums text-sm">
+            {market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
+          </span>
+        </span>
+        <span>
+          <span className="block text-[var(--muted)]">Available now</span>
+          <span className="tabular-nums text-sm">
+            {fundable === undefined ? '—' : fmt(Number(formatUnits(fundable, pool.decimals)), 0)}
+          </span>
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/**
+ * The choice of borrow asset is the choice of what the loan costs, and a `<select>` states only the
+ * ticker — the one thing the user already knows. Each pool is listed with its rate and with what it
+ * can actually fund, because both are properties of the pool being picked rather than of the
+ * position, and both are decided here rather than on the screen that comes after.
+ */
 function BorrowAssetSelect({
   pools,
   value,
@@ -250,21 +312,28 @@ function BorrowAssetSelect({
   value: string;
   onChange: (v: `0x${string}`) => void;
 }) {
+  // Both deposit cards render one of these, and two radio groups sharing a name would behave as a
+  // single one — picking in either would clear the other's selection.
+  const group = useId();
   return (
-    <div>
-      <label className="block text-xs text-[var(--muted)] mb-1">Borrow asset</label>
+    <fieldset>
+      <legend className="block text-xs text-[var(--muted)] mb-1">Borrow asset</legend>
       {pools.length === 0 ? (
         <p className="text-sm text-[var(--muted)] py-2.5">No lending pools available yet.</p>
       ) : (
-        <select value={value} onChange={(e) => onChange(e.target.value as `0x${string}`)} className="input w-full p-2.5">
+        <div className="space-y-1.5">
           {pools.map((p) => (
-            <option key={p.id} value={p.borrowAsset}>
-              Borrow {p.symbol}
-            </option>
+            <PoolOption
+              key={p.id}
+              pool={p}
+              group={group}
+              selected={p.borrowAsset === value}
+              onSelect={() => onChange(p.borrowAsset as `0x${string}`)}
+            />
           ))}
-        </select>
+        </div>
       )}
-    </div>
+    </fieldset>
   );
 }
 
