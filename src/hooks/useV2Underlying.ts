@@ -43,6 +43,12 @@ export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underly
     query: {enabled: balance > 0n, refetchInterval: LIVE_REFETCH_MS},
   });
 
+  // `enabled: false` stops the query, it does not evict what it already fetched, and none of the
+  // four reads take the balance as an argument — so the cache key is the same at zero and the
+  // reserves are still there after a deposit empties the wallet. Multiplying them by a zero balance
+  // yields a truthy `0 WETH / 0 USDC`, printed under a USD figure that correctly reads "—".
+  if (balance === 0n) return undefined;
+
   // A failed refetch leaves the last successful reserves cached, and reserves are what turn the
   // balance into amounts — serving them as current would state a composition the pair has moved on
   // from. Per-call failures land as an undefined result and are caught by the checks below.
@@ -52,8 +58,8 @@ export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underly
   const token0 = data?.[2].result;
   const token1 = data?.[3].result;
   if (reserves === undefined || totalSupply === undefined || !token0 || !token1) return undefined;
-  // Only reachable if every LP has been burned, in which case the balance is zero too and there is
-  // no share to express.
+  // The divisor, read from the pair rather than derived here. A supply of zero contradicts the
+  // non-zero balance checked above, so it means the two reads landed on different states.
   if (totalSupply === 0n) return undefined;
 
   return {
