@@ -9,7 +9,8 @@ import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hook
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
-import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {borrowingCapacityUsd, liquidationDropBps, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {usePoolMarket} from '@/hooks/useLendingPool';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
@@ -105,6 +106,18 @@ function formatHealth(hf: bigint | undefined): string {
   if (hf > 10n ** 30n) return '∞';
   return Number(formatUnits(hf, 18)).toFixed(2);
 }
+/**
+ * The health factor restated as the fall in the LP that would reach the liquidation line, which is
+ * the form of it a borrower can act on. Kept beside the factor rather than replacing it: the ratio
+ * is the figure the protocol and every other interface speak in.
+ */
+function formatLiquidationDistance(hf: bigint | undefined): string {
+  const drop = liquidationDropBps(hf);
+  if (drop === undefined) return hf === undefined ? '—' : 'No debt to liquidate';
+  if (drop === 0n) return 'Liquidatable now';
+  return `Liquidated if the LP falls ${(Number(drop) / 100).toFixed(1)}%`;
+}
+
 function healthColor(hf: bigint | undefined): string {
   if (hf === undefined || hf > 10n ** 30n) return 'text-[var(--accent)]';
   const v = Number(formatUnits(hf, 18));
@@ -564,6 +577,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
+  const market = usePoolMarket(position.pool.address as `0x${string}`, position.pool.borrowAsset as `0x${string}`);
 
   // Polled: debt accrues every block and both the health factor and the capacity are re-derived
   // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
@@ -600,8 +614,25 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // exactly where it is needed: a position already near its limit. Clamped at zero, since 99% of
   // capacity can be below a debt that has accrued past it.
   const drawable = capacityRaw === undefined ? undefined : (capacityRaw * BORROW_HEADROOM_BPS) / 10_000n;
-  const available =
+  const fromCapacity =
     debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
+  // The second bound, and the one the LTV arithmetic above knows nothing about: borrow() ends in
+  // pool.transferOut, which requires the amount to be at most the borrow asset actually held by the
+  // pool. A position with capacity to spare in a pool whose cash borrowers have already taken
+  // reverts INSUFFICIENT_LIQUIDITY, so offering the LTV headroom alone advertises a loan the pool
+  // cannot fund. Held back by the same 1% as the capacity, for a different reason: the cash can be
+  // drawn down by a borrow in an earlier block.
+  const liquidityCap =
+    market === undefined ? undefined : (market.liquidity * BORROW_HEADROOM_BPS) / 10_000n;
+  const available =
+    fromCapacity === undefined || liquidityCap === undefined
+      ? undefined
+      : fromCapacity < liquidityCap
+        ? fromCapacity
+        : liquidityCap;
+  // Distinguishes "you have borrowed most of what your collateral allows" from "the pool has run
+  // dry", which are the same greyed-out button and entirely different situations for the user.
+  const liquidityBound = fromCapacity !== undefined && liquidityCap !== undefined && liquidityCap < fromCapacity;
   const parsed = parseAmount(amount, decimals);
   const hf = healthError ? undefined : (health as bigint | undefined);
   const projected =
@@ -655,11 +686,13 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
               </>
             )}
           </p>
-          <p className="text-xs text-[var(--muted)]">Liquidation below 1.00</p>
+          {/* Follows the projection when there is one: the question the user is asking is what the
+              borrow they are about to sign does to their exposure, not what yesterday's does. */}
+          <p className="text-xs text-[var(--muted)]">{formatLiquidationDistance(projected ?? hf)}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-sm border-y border-[var(--border)] py-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Collateral</p>
           {/* Priced live, from the same call the health factor above divides by. The subgraph's
@@ -671,6 +704,15 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
         <div>
           <p className="text-[var(--muted)] text-xs">Debt</p>
           <p className="tabular-nums">{debtRaw === undefined ? '—' : fmt(Number(formatUnits(debtRaw, decimals)))}</p>
+        </div>
+        <div>
+          {/* The price of the loan, on the screen where the amount is chosen rather than on the
+              portfolio page after it has been signed. It moves with the pool's utilization, so a
+              borrow by someone else changes what this one costs. */}
+          <p className="text-[var(--muted)] text-xs">Borrow APR</p>
+          <p className="tabular-nums">
+            {market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
+          </p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Available</p>
@@ -719,6 +761,13 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             }}
           />
         </div>
+        {liquidityBound && (
+          <p className="text-xs text-[var(--muted-strong)]">
+            {available === 0n
+              ? 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'
+              : 'Limited by the cash left in this pool rather than by your collateral. More becomes available as loans are repaid.'}
+          </p>
+        )}
         {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
           <p className="text-xs text-[var(--muted)]">
             Borrowing unlocks in {cooldown.blocksLeft.toString()} block

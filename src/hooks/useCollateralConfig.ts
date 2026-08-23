@@ -97,6 +97,28 @@ export function borrowingCapacityUsd(
  * factor of 0.00, or into a reassuring one that understates the risk of a position that does
  * carry debt.
  */
+/**
+ * How far the collateral can fall before the position becomes liquidatable, in bps of its current
+ * value.
+ *
+ * getHealthFactor divides the haircut collateral value by the debt, and the debt does not move with
+ * the LP price, so the factor is linear in that value: multiplying the collateral by `1/hf` lands
+ * exactly on 1.00. This is the same fact the health factor states, expressed in the quantity the
+ * borrower is actually exposed to — a factor of 1.15 and "a 13% fall liquidates you" are the same
+ * sentence, and only one of them can be acted on without doing arithmetic first.
+ *
+ * Undefined for a position with no debt, which getHealthFactor answers as uint256.max: there is no
+ * price at which it can be liquidated, which is different from a fall of zero.
+ */
+export function liquidationDropBps(hf: bigint | undefined): bigint | undefined {
+  if (hf === undefined) return undefined;
+  if (hf > 10n ** 30n) return undefined;
+  // Already at or past the line: no further fall is needed, so the honest answer is none rather
+  // than a negative distance.
+  if (hf <= 10n ** 18n) return 0n;
+  return BPS - (BPS * 10n ** 18n) / hf;
+}
+
 export function projectedHealthFactor(
   totalDebt: bigint | undefined,
   maxBorrow: bigint | undefined,

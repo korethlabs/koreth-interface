@@ -4,11 +4,11 @@ import {useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
-import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
+import {usePoolLenderState, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
 import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
@@ -186,20 +186,11 @@ function PositionCard({
   const collateral = usePositionValue(id);
   const {position: onChain, refetch: refetchOnChain} = useOnChainPosition(id);
 
-  // Live borrow APR for this position's pool (same read as the Markets page): interest-rate
-  // model rate at the pool's current utilization. Shared across every collateral type now.
-  const poolAddr = position.pool.address as `0x${string}`;
-  const {data: poolState} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'getPoolState'});
-  const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
-  const irmAddr = irm as `0x${string}` | undefined;
-  const util = (poolState as {utilization: bigint} | undefined)?.utilization ?? 0n;
-  const {data: borrowAprBps} = useReadContract({
-    address: irmAddr,
-    abi: interestRateModelAbi,
-    functionName: 'getBorrowRateAPR',
-    args: [util],
-    query: {enabled: !!irmAddr && poolState !== undefined},
-  });
+  // The rate this position is paying, from the same hook the borrow page prices a new draw with, so
+  // the two pages cannot quote different costs for the same debt. Previously read inline here with
+  // the utilization coalesced to zero, which showed the model's base rate — a real, confident,
+  // wrong number — whenever the pool state had not landed yet.
+  const market = usePoolMarket(position.pool.address as `0x${string}`, asset);
 
   // An errored read counts as missing rather than as its last cached answer. Zero is not a safe
   // stand-in here: it is what decides the card offers a withdraw instead of a repay, and withdraw()
@@ -257,7 +248,7 @@ function PositionCard({
         />
         <Stat
           label="Borrow APR"
-          value={borrowAprBps === undefined ? '—' : `${(Number(borrowAprBps) / 100).toFixed(2)}%`}
+          value={market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
         />
         <Stat label="Health" value={formatHealth(healthError ? undefined : (health as bigint | undefined))} />
         <Stat
