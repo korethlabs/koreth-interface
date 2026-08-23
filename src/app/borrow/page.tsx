@@ -647,8 +647,9 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
       : fromCapacity < liquidityCap
         ? fromCapacity
         : liquidityCap;
-  // Distinguishes "you have borrowed most of what your collateral allows" from "the pool has run
-  // dry", which are the same greyed-out button and entirely different situations for the user.
+  // Which of the two bounds is binding. They are the same greyed-out button and entirely different
+  // situations: one is undone by repaying or depositing, the other only by someone else repaying.
+  // Ties count as capacity-bound, since that is the side the user can act on.
   const liquidityBound = fromCapacity !== undefined && liquidityCap !== undefined && liquidityCap < fromCapacity;
   const parsed = parseAmount(amount, decimals);
   const hf = healthError ? undefined : (health as bigint | undefined);
@@ -784,13 +785,23 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             }}
           />
         </div>
-        {liquidityBound && (
+        {/* Nothing is said when the collateral is the binding constraint and there is still room to
+            draw: that is the ordinary case, and `Available` next to the health factor already
+            describes it. The two situations worth a sentence are the ones that end in a disabled
+            button, where the user is owed the reason, and the pool running dry, which is the bound
+            nothing else on the card hints at. */}
+        {liquidityBound ? (
           <p className="text-xs text-[var(--muted-strong)]">
             {available === 0n
               ? 'This pool has lent out all of its cash, so nothing can be drawn right now regardless of your collateral. It refills as loans are repaid.'
               : 'Limited by the cash left in this pool rather than by your collateral. More becomes available as loans are repaid.'}
           </p>
-        )}
+        ) : available === 0n ? (
+          <p className="text-xs text-[var(--muted-strong)]">
+            You have drawn everything this collateral supports. Repay some debt, or deposit more
+            collateral, to borrow again.
+          </p>
+        ) : null}
         {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
           <p className="text-xs text-[var(--muted)]">
             Borrowing unlocks in {cooldown.blocksLeft.toString()} block
