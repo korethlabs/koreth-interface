@@ -38,7 +38,10 @@ export type PoolLenderState = {
   withdrawable: bigint;
   /** True when idle cash, not the balance, is what limits the withdrawal. */
   liquidityCapped: boolean;
-  /** Shares to burn for a payout of `amount`, saturating to the whole position at the cap. */
+  /**
+   * Shares to burn to be paid at most `amount`: the conversion rounds down, so the payout lands on
+   * or just under it. At the cap it saturates to the whole withdrawable position instead.
+   */
   sharesFor: (amount: bigint) => bigint;
   /** No shares outstanding: the next deposit is the first, and forfeits `deadShares`. */
   isEmpty: boolean;
