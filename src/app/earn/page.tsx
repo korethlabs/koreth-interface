@@ -1,13 +1,15 @@
 'use client';
 
-import {useMemo, useState} from 'react';
+import {useState} from 'react';
 import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
-import {useSubgraphPools, useSupplyPositions} from '@/hooks/useSubgraph';
-import type {SubgraphPool, SubgraphSupplyPosition} from '@/lib/subgraph';
-import {TxButton} from '@/components/TxButton';
+import {useSubgraphPools} from '@/hooks/useSubgraph';
+import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
+import type {SubgraphPool} from '@/lib/subgraph';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {ActionButton} from '@/components/ActionButton';
+import {PoolWithdraw} from '@/components/PoolWithdraw';
 import {TokenChip} from '@/components/TokenChip';
 
 const SECONDS_PER_YEAR = 31_557_600n;
@@ -20,47 +22,41 @@ function parseAmount(v: string, decimals: number): bigint {
   }
 }
 
-function fmt(n: number): string {
-  return n.toLocaleString('en-US', {maximumFractionDigits: 2});
+function fmt(n: number, max = 2): string {
+  return n.toLocaleString('en-US', {maximumFractionDigits: max});
 }
 
 export default function EarnPage() {
   const {address, isConnected} = useAccount();
   const {data: pools} = useSubgraphPools();
-  const {data: supplies, refetch: refetchSupplies} = useSupplyPositions(address);
-
-  const totalSupplied = useMemo(
-    () => (supplies ?? []).reduce((sum, s) => sum + Number(s.suppliedAmount), 0),
-    [supplies],
-  );
+  // One read for the page rather than one per card: the flag is protocol-wide, and both actions on
+  // every card are gated on it.
+  const paused = useProtocolPaused();
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-16">
-      <div className="flex flex-wrap items-end justify-between gap-4 mb-10">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Earn</h1>
-          <p className="mt-2 text-[var(--muted-strong)]">Supply a stablecoin and earn interest from borrowers.</p>
-        </div>
-        {isConnected && totalSupplied > 0 && (
-          <div className="card px-5 py-3 text-right">
-            <p className="text-xs text-[var(--muted)]">You&apos;re supplying</p>
-            <p className="text-xl font-semibold tabular-nums">${fmt(totalSupplied)}</p>
-          </div>
-        )}
+      {/* No aggregate across pools. Each pool is denominated in its own borrow asset, so summing
+          the balances adds WETH to USDC; the total was rendered with a dollar sign, which made
+          "3 WETH + 5,000 USDC" read as $5,003. Pricing them would need a feed per asset, and each
+          card already states its own balance in the unit it is actually held in. */}
+      <div className="mb-10">
+        <h1 className="text-3xl font-semibold tracking-tight">Earn</h1>
+        <p className="mt-2 text-[var(--muted-strong)]">Supply a stablecoin and earn interest from borrowers.</p>
       </div>
+
+      {paused === true && (
+        <div className="card p-4 mb-6 text-sm text-[var(--muted-strong)]">
+          The protocol is paused. Supplying and withdrawing are disabled until it resumes; funds
+          already supplied are unaffected.
+        </div>
+      )}
 
       {!isConnected ? (
         <div className="card p-10 text-center text-[var(--muted)]">Connect your wallet to supply.</div>
       ) : (
         <div className="grid md:grid-cols-2 gap-4">
           {(pools ?? []).map((p) => (
-            <PoolSupplyCard
-              key={p.id}
-              pool={p}
-              owner={address!}
-              position={(supplies ?? []).find((s) => s.pool.id === p.id)}
-              onDone={() => refetchSupplies()}
-            />
+            <PoolSupplyCard key={p.id} pool={p} owner={address!} paused={paused} />
           ))}
         </div>
       )}
@@ -71,42 +67,60 @@ export default function EarnPage() {
 function PoolSupplyCard({
   pool,
   owner,
-  position,
-  onDone,
+  paused,
 }: {
   pool: SubgraphPool;
   owner: `0x${string}`;
-  position?: SubgraphSupplyPosition;
-  onDone: () => void;
+  paused: boolean | undefined;
 }) {
   const [amount, setAmount] = useState('');
   const asset = pool.borrowAsset as `0x${string}`;
   const poolAddr = pool.address as `0x${string}`;
+  const {decimals, symbol} = pool;
 
-  const {data: walletBal, refetch: refetchBal} = useReadContract({address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
+  const {data: walletBal, isError: walletBalError, refetch: refetchBal} = useReadContract({address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
   const {data: allowance, refetch: refetchAllow} = useReadContract({address: asset, abi: erc20Abi, functionName: 'allowance', args: [owner, poolAddr]});
-  const {data: state} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'getPoolState'});
   const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
   const {data: reserve} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'reserveFactorBps'});
+  const lender = usePoolLenderState(poolAddr, asset, owner);
 
-  const util = (state as {utilization: bigint} | undefined)?.utilization ?? 0n;
   const irmAddr = irm as `0x${string}` | undefined;
   const {data: supplyRatePerSec} = useReadContract({
     address: irmAddr,
     abi: interestRateModelAbi,
     functionName: 'getSupplyRate',
-    args: [util, (reserve as bigint) ?? 0n],
-    query: {enabled: !!irmAddr && state !== undefined && reserve !== undefined},
+    args: lender === undefined ? undefined : [lender.utilization, (reserve as bigint) ?? 0n],
+    // Follows the utilization it is derived from rather than settling at mount: the rate moves with
+    // every borrow and repayment, and an APR pinned to page load is an APR for a different pool.
+    query: {enabled: !!irmAddr && lender !== undefined && reserve !== undefined, refetchInterval: LIVE_REFETCH_MS},
   });
   const apr =
     supplyRatePerSec === undefined
       ? '—'
       : `${(Number(formatUnits((supplyRatePerSec as bigint) * SECONDS_PER_YEAR, 18)) * 100).toFixed(2)}%`;
 
-  const parsed = parseAmount(amount, pool.decimals);
-  const balance = (walletBal as bigint) ?? 0n;
-  const valid = parsed > 0n && parsed <= balance;
-  const shares = position ? BigInt(position.shares) : 0n;
+  // Unknown is not zero: coalescing the wallet balance would put "0.00 · Max" on screen while the
+  // read is in flight, telling a funded user they have nothing to supply.
+  const balance = walletBalError ? undefined : (walletBal as bigint | undefined);
+
+  // Both actions carry `whenNotPaused`. An unread flag counts as not actionable — an admin can
+  // pause at any moment, so the cached `false` from before one is the answer least worth trusting.
+  const active = paused === false;
+
+  const parsed = parseAmount(amount, decimals);
+  // The first deposit into an empty pool mints `received - DEAD_SHARES` and hands DEAD_SHARES to
+  // 0xdead, so anything at or below that floor reverts BELOW_MINIMUM_DEPOSIT and anything just
+  // above it silently gives up most of itself.
+  const firstDeposit = lender?.isEmpty === true;
+  const minDeposit = firstDeposit ? lender.deadShares + 1n : 0n;
+  const canSupply =
+    active && lender !== undefined && balance !== undefined && parsed > 0n && parsed <= balance && parsed >= minDeposit;
+
+  const onDone = () => {
+    refetchBal();
+    refetchAllow();
+    lender?.refetch();
+  };
 
   return (
     <div className="card card-hover p-5 space-y-5">
@@ -129,22 +143,43 @@ function PoolSupplyCard({
       <div className="grid grid-cols-2 gap-3 text-sm border-y border-[var(--border)] py-3">
         <div>
           <p className="text-[var(--muted)] text-xs">Total supplied</p>
-          <p className="tabular-nums">{fmt(Number(pool.totalSupply))}</p>
+          {/* The pool's own accounting, like the balance beside it: the subgraph's copy trails the
+              chain by however far indexing is behind, and a pool total smaller than the share of it
+              this lender is shown to hold is the state that reads as a bug. */}
+          <p className="tabular-nums">
+            {lender === undefined ? '—' : fmt(Number(formatUnits(lender.totalSupply, decimals)))}
+          </p>
         </div>
         <div>
           <p className="text-[var(--muted)] text-xs">Your supply</p>
-          <p className="tabular-nums">{position ? fmt(Number(position.suppliedAmount)) : '0'}</p>
+          {/* The pool's own share price, not the subgraph's `suppliedAmount`: this is the figure
+              the withdrawal below is bounded by, and the two disagreeing is how a lender ends up
+              asking for more than they hold. */}
+          <p className="tabular-nums">
+            {lender === undefined ? '—' : fmt(Number(formatUnits(lender.redeemable, decimals)))}
+          </p>
         </div>
       </div>
 
-      {/* Action */}
+      {/* Supply */}
       <div className="space-y-2.5">
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
           <span>Wallet</span>
-          <button onClick={() => setAmount(formatUnits(balance, pool.decimals))} className="hover:text-[var(--foreground)]">
-            {fmt(Number(formatUnits(balance, pool.decimals)))} {pool.symbol} · Max
+          <button
+            onClick={() => balance !== undefined && setAmount(formatUnits(balance, decimals))}
+            disabled={balance === undefined}
+            className="hover:text-[var(--foreground)] disabled:opacity-40"
+          >
+            {balance === undefined ? '—' : fmt(Number(formatUnits(balance, decimals)))} {symbol} · Max
           </button>
         </div>
+        {firstDeposit && (
+          <p className="text-xs text-[var(--muted-strong)]">
+            This is the first deposit into the pool, so {fmt(Number(formatUnits(lender.deadShares, decimals)), 6)}{' '}
+            {symbol} is burned to seed it and cannot be withdrawn by anyone. Deposits at or below
+            that amount are rejected.
+          </p>
+        )}
         <div className="flex gap-2">
           <input
             value={amount}
@@ -160,29 +195,25 @@ function PoolSupplyCard({
             functionName="supply"
             args={[parsed]}
             label="Supply"
-            disabled={!valid}
+            disabled={!canSupply}
             onConfirmed={() => {
               setAmount('');
-              refetchBal();
-              refetchAllow();
               onDone();
             }}
           />
         </div>
-        {shares > 0n && (
-          <TxButton
-            address={poolAddr}
-            abi={lendingPoolAbi}
-            functionName="withdraw"
-            args={[shares]}
-            label="Withdraw all"
-            onConfirmed={() => {
-              refetchBal();
-              onDone();
-            }}
-          />
-        )}
       </div>
+
+      {lender !== undefined && lender.shares > 0n && (
+        <div className="border-t border-[var(--border)] pt-4">
+          <PoolWithdraw
+            pool={{address: poolAddr, symbol, decimals}}
+            lender={lender}
+            active={active}
+            onDone={onDone}
+          />
+        </div>
+      )}
     </div>
   );
 }

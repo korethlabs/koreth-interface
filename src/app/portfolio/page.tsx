@@ -8,9 +8,11 @@ import {positionManagerAbi, lendingEngineAbi, lendingPoolAbi, interestRateModelA
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
 import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
+import {PoolWithdraw} from '@/components/PoolWithdraw';
 import {TokenChip} from '@/components/TokenChip';
 import {UsdValue} from '@/components/UsdValue';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
@@ -34,6 +36,7 @@ export default function PortfolioPage() {
   const {address, isConnected} = useAccount();
   const {data: positions, refetch: refetchPositions} = useSubgraphPositions(address);
   const {data: supplies, refetch: refetchSupplies} = useSupplyPositions(address);
+  const paused = useProtocolPaused();
 
   const borrows = positions ?? [];
   const lends = supplies ?? [];
@@ -53,7 +56,13 @@ export default function PortfolioPage() {
             ) : (
               <div className="grid md:grid-cols-2 gap-4">
                 {lends.map((s) => (
-                  <SupplyCard key={s.id} supply={s} onDone={() => refetchSupplies()} />
+                  <SupplyCard
+                    key={s.id}
+                    supply={s}
+                    owner={address!}
+                    paused={paused}
+                    onDone={() => refetchSupplies()}
+                  />
                 ))}
               </div>
             )}
@@ -77,9 +86,25 @@ export default function PortfolioPage() {
   );
 }
 
-function SupplyCard({supply, onDone}: {supply: SubgraphSupplyPosition; onDone: () => void}) {
-  const {symbol, address: poolAddr} = supply.pool;
-  const shares = BigInt(supply.shares);
+/**
+ * The subgraph decides which pools appear here — that is a list, and being a block behind only
+ * delays a card. Everything the withdrawal is sized by is read from the pool itself.
+ */
+function SupplyCard({
+  supply,
+  owner,
+  paused,
+  onDone,
+}: {
+  supply: SubgraphSupplyPosition;
+  owner: `0x${string}`;
+  paused: boolean | undefined;
+  onDone: () => void;
+}) {
+  const {symbol, decimals, address, borrowAsset} = supply.pool;
+  const poolAddr = address as `0x${string}`;
+  const lender = usePoolLenderState(poolAddr, borrowAsset as `0x${string}`, owner);
+
   return (
     <div className="card card-hover p-5 space-y-4">
       <div className="flex items-center justify-between">
@@ -93,17 +118,22 @@ function SupplyCard({supply, onDone}: {supply: SubgraphSupplyPosition; onDone: (
         <div className="text-right">
           <p className="text-xs text-[var(--muted)]">Your supply</p>
           <p className="text-xl font-semibold tabular-nums leading-tight">
-            {Number(supply.suppliedAmount).toLocaleString('en-US', {maximumFractionDigits: 2})}
+            {lender === undefined
+              ? '—'
+              : Number(formatUnits(lender.redeemable, decimals)).toLocaleString('en-US', {
+                  maximumFractionDigits: 2,
+                })}
           </p>
         </div>
       </div>
-      <TxButton
-        address={poolAddr as `0x${string}`}
-        abi={lendingPoolAbi}
-        functionName="withdraw"
-        args={[shares]}
-        label="Withdraw all"
-        onConfirmed={onDone}
+      <PoolWithdraw
+        pool={{address: poolAddr, symbol, decimals}}
+        lender={lender}
+        active={paused === false}
+        onDone={() => {
+          lender?.refetch();
+          onDone();
+        }}
       />
     </div>
   );
