@@ -7,6 +7,7 @@ import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
 import {usePositionValue} from '@/hooks/usePositionValue';
+import {NO_DEBT_HEALTH_FACTOR} from '@/hooks/useCollateralConfig';
 import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {usePoolLenderState, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
 import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
@@ -25,10 +26,13 @@ function parseAmount(v: string, decimals: number): bigint {
   }
 }
 
-// getHealthFactor returns uint256.max when there's no debt; show ∞ for very large values.
+// getHealthFactor returns exactly uint256.max when there is no debt, and that is the only case ∞
+// stands for: a position carrying dust against whole collateral also reaches an enormous factor,
+// and reading it as debt-free would be wrong. Those are capped rather than printed in full.
 function formatHealth(hf: bigint | undefined): string {
   if (hf === undefined) return '—';
-  if (hf > 10n ** 30n) return '∞';
+  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
+  if (hf > 1_000n * 10n ** 18n) return '> 1000';
   return Number(formatUnits(hf, 18)).toFixed(2);
 }
 

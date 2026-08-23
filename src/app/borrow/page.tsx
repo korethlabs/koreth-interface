@@ -9,7 +9,7 @@ import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hook
 import {usePositionValue} from '@/hooks/usePositionValue';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
-import {borrowingCapacityUsd, liquidationDropBps, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {LIQUIDATION_HEALTH_FACTOR, NO_DEBT_HEALTH_FACTOR, borrowingCapacityUsd, liquidationDropBps, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {usePoolMarket} from '@/hooks/useLendingPool';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
@@ -101,9 +101,13 @@ function formatTokenAmount(raw: bigint, token: string): string {
   return `${fmt(n, n >= 1_000 ? 2 : 4)} ${symbol}`;
 }
 
+// ∞ is reserved for the debt-free sentinel itself, so it cannot be read as "no debt" by a position
+// carrying a dust balance against whole collateral, whose factor is merely enormous. Those are
+// capped instead: past a certain point the digits stop distinguishing anything.
 function formatHealth(hf: bigint | undefined): string {
   if (hf === undefined) return '—';
-  if (hf > 10n ** 30n) return '∞';
+  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
+  if (hf > 1_000n * 10n ** 18n) return '> 1000';
   return Number(formatUnits(hf, 18)).toFixed(2);
 }
 /**
@@ -112,14 +116,19 @@ function formatHealth(hf: bigint | undefined): string {
  * is the figure the protocol and every other interface speak in.
  */
 function formatLiquidationDistance(hf: bigint | undefined): string {
+  if (hf === undefined) return '—';
   const drop = liquidationDropBps(hf);
-  if (drop === undefined) return hf === undefined ? '—' : 'No debt to liquidate';
-  if (drop === 0n) return 'Liquidatable now';
+  if (drop === undefined) return 'No debt to liquidate';
+  // isLiquidatable clears a position at exactly 1.00, so the boundary is not yet executable. It is
+  // a different sentence from one already past the line, and saying a liquidation can be called
+  // when it would revert is the kind of claim this page is being made not to make.
+  if (hf < LIQUIDATION_HEALTH_FACTOR) return 'Liquidatable now';
+  if (drop === 0n) return 'Liquidated by any further LP fall';
   return `Liquidated if the LP falls ${(Number(drop) / 100).toFixed(1)}%`;
 }
 
 function healthColor(hf: bigint | undefined): string {
-  if (hf === undefined || hf > 10n ** 30n) return 'text-[var(--accent)]';
+  if (hf === undefined || hf === NO_DEBT_HEALTH_FACTOR) return 'text-[var(--accent)]';
   const v = Number(formatUnits(hf, 18));
   if (v < 1.1) return 'text-[var(--danger)]';
   if (v < 1.5) return 'text-[var(--warning)]';

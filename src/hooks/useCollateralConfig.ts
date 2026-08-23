@@ -97,6 +97,22 @@ export function borrowingCapacityUsd(
  * factor of 0.00, or into a reassuring one that understates the risk of a position that does
  * carry debt.
  */
+export function projectedHealthFactor(
+  totalDebt: bigint | undefined,
+  maxBorrow: bigint | undefined,
+  config: CollateralConfig | undefined,
+): bigint | undefined {
+  if (config === undefined || maxBorrow === undefined || totalDebt === undefined) return undefined;
+  if (config.maxLtv === 0n || totalDebt === 0n) return undefined;
+  return (config.liquidationThreshold * maxBorrow * 10n ** 18n) / (config.maxLtv * totalDebt);
+}
+
+/** The health factor of a debt-free position, as getHealthFactor reports it. */
+export const NO_DEBT_HEALTH_FACTOR = 2n ** 256n - 1n;
+
+/** Health factor at which a position becomes liquidatable — strictly below, as isLiquidatable checks. */
+export const LIQUIDATION_HEALTH_FACTOR = 10n ** 18n;
+
 /**
  * How far the collateral can fall before the position becomes liquidatable, in bps of its current
  * value.
@@ -107,24 +123,17 @@ export function borrowingCapacityUsd(
  * borrower is actually exposed to — a factor of 1.15 and "a 13% fall liquidates you" are the same
  * sentence, and only one of them can be acted on without doing arithmetic first.
  *
- * Undefined for a position with no debt, which getHealthFactor answers as uint256.max: there is no
- * price at which it can be liquidated, which is different from a fall of zero.
+ * Undefined for a position with no debt, which getHealthFactor answers as exactly uint256.max:
+ * there is no price at which it can be liquidated, which is different from a fall of zero. Matched
+ * exactly rather than by an "implausibly large" cutoff, which a real position carrying dust debt
+ * against whole collateral can exceed — and would then be described as having nothing to liquidate.
  */
 export function liquidationDropBps(hf: bigint | undefined): bigint | undefined {
   if (hf === undefined) return undefined;
-  if (hf > 10n ** 30n) return undefined;
-  // Already at or past the line: no further fall is needed, so the honest answer is none rather
-  // than a negative distance.
-  if (hf <= 10n ** 18n) return 0n;
-  return BPS - (BPS * 10n ** 18n) / hf;
-}
-
-export function projectedHealthFactor(
-  totalDebt: bigint | undefined,
-  maxBorrow: bigint | undefined,
-  config: CollateralConfig | undefined,
-): bigint | undefined {
-  if (config === undefined || maxBorrow === undefined || totalDebt === undefined) return undefined;
-  if (config.maxLtv === 0n || totalDebt === 0n) return undefined;
-  return (config.liquidationThreshold * maxBorrow * 10n ** 18n) / (config.maxLtv * totalDebt);
+  if (hf === NO_DEBT_HEALTH_FACTOR) return undefined;
+  // At or past the line already: no fall is needed, rather than a negative distance. isLiquidatable
+  // clears at exactly 1.00, so this zero covers both a position already under and one standing on
+  // the threshold; the two are distinguished by the caller, which still has the factor itself.
+  if (hf <= LIQUIDATION_HEALTH_FACTOR) return 0n;
+  return BPS - (BPS * LIQUIDATION_HEALTH_FACTOR) / hf;
 }
