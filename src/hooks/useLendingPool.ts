@@ -89,9 +89,9 @@ export type PoolMarket = {
   /** Pool utilization in bps, as the pool last recorded it. */
   utilization: bigint;
   /**
-   * Re-reads both figures. Polling alone would leave them behind for up to one interval after the
-   * caller's own borrow or repayment, which is exactly the transaction that moved them — and the
-   * liquidity is what bounds the next one.
+   * Re-reads the pool, and with it the utilization the rate is keyed on. Polling alone would leave
+   * both behind for up to one interval after the caller's own borrow or repayment — exactly the
+   * transaction that moved them, and the liquidity is what bounds the next one.
    */
   refetch: () => void;
 };
@@ -117,7 +117,7 @@ export function usePoolMarket(
 
   // The rate model is addressed by the pool rather than configured here, so it takes a second round
   // trip: its address is itself one of the reads above.
-  const {data: apr, isError: aprError, refetch: refetchApr} = useReadContract({
+  const {data: apr, isError: aprError} = useReadContract({
     address: irm,
     abi: interestRateModelAbi,
     functionName: 'getBorrowRateAPR',
@@ -134,12 +134,10 @@ export function usePoolMarket(
     borrowAprBps: apr as bigint,
     liquidity,
     utilization: state.utilization,
-    // Both legs: the pool read carries the liquidity, and the rate is derived from the utilization
-    // it returns, so refreshing one without the other would price the new state at the old rate.
-    refetch: () => {
-      refetchPool();
-      refetchApr();
-    },
+    // Only the pool read. The rate query is keyed on the utilization that read returns, so it
+    // re-runs on its own once a new one lands; refetching it here would re-ask the rate model
+    // about the utilization from this render, which is the figure being replaced.
+    refetch: refetchPool,
   };
 }
 

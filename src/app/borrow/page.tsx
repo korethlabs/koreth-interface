@@ -119,11 +119,16 @@ function formatLiquidationDistance(hf: bigint | undefined): string {
   if (hf === undefined) return '—';
   const drop = liquidationDropBps(hf);
   if (drop === undefined) return 'No debt to liquidate';
-  // isLiquidatable clears a position at exactly 1.00, so the boundary is not yet executable. It is
-  // a different sentence from one already past the line, and saying a liquidation can be called
-  // when it would revert is the kind of claim this page is being made not to make.
+  // The two exact cases are decided on the factor itself rather than on the rounded distance, which
+  // cannot tell them apart. isLiquidatable clears a position at exactly 1.00, so the boundary is
+  // not yet executable, and saying a liquidation can be called where it would revert is the kind of
+  // claim this page is being made not to make.
   if (hf < LIQUIDATION_HEALTH_FACTOR) return 'Liquidatable now';
-  if (drop === 0n) return 'Liquidated by any further LP fall';
+  if (hf === LIQUIDATION_HEALTH_FACTOR) return 'Liquidated by any further LP fall';
+  // Below a tenth of a percent the figure has to be described rather than printed: truncating it
+  // would render a real distance as `0.0%`, which reads as no fall being needed at all — the very
+  // claim the line above exists to reserve for the position that is actually on the line.
+  if (drop < 10n) return 'Liquidated by a fall of under 0.1%';
   // Truncated rather than rounded to the nearest tenth, for the same reason the bps figure is:
   // rounding 13.36% up to 13.4% would name a fall the position in fact survives, and the number is
   // being read as the point at which the collateral is taken.
