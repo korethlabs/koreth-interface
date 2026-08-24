@@ -49,7 +49,18 @@ export type PositionSummary = {
   available: bigint | undefined;
   /** True when the pool's cash, not the collateral, is what limits the next borrow. */
   liquidityBound: boolean;
-  /** Re-reads every figure above, including the pool. */
+  /**
+   * Re-reads what a transaction on this position moves: the debt, the health factor, the capacity,
+   * the stored position record and the pool.
+   *
+   * Not the collateral value, and not the risk config. No action either page offers changes the
+   * first — a borrow and a repayment leave the LP exactly where it is — and the one that does
+   * return it, withdraw(), is caught by the position record, which the collateral cell is gated on
+   * and which this does re-read. The config is an admin's to change, never the caller's. Both are
+   * polled on the same interval as everything else regardless, so neither can drift for longer than
+   * any other figure here; they are omitted because refetching them would be answering a question
+   * the confirmed transaction did not ask.
+   */
   refetch: () => void;
 };
 
