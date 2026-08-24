@@ -141,11 +141,22 @@ export default function BorrowPage() {
               </div>
             ) : (
               <div className="grid lg:grid-cols-2 gap-4">
+                {/* Keyed by the account, so switching wallets in the extension builds new cards
+                    rather than re-rendering these with a different `owner`. Their local state is
+                    all about one account — most sharply the note confirming a deposit, which
+                    persists for the session and would otherwise carry a "✓ Deposited" from the
+                    previous wallet onto a card now describing balances the new one has never
+                    deposited.
+
+                    The collateral type is in the key as well as the address, because these two are
+                    siblings and each is mounted only while the RiskManager still accepts its type:
+                    on the address alone they would share a key, and suspending one type would hand
+                    its state to the other rather than unmounting it. */}
                 {enabled.has('UniswapV2') && (
-                  <DepositV2Card owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <DepositV2Card key={`v2:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
                 {enabled.has('UniswapV3') && (
-                  <V3DepositCard owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
               </div>
             )}
@@ -306,16 +317,32 @@ function DepositV2Card({
   pools: SubgraphPool[];
   onDone: () => void;
 }) {
+  const [deposited, setDeposited] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
 
   const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
+  const {data: allowance, isError: allowanceError, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
   const balance = (lpBalance as bigint) ?? 0n;
   const underlying = useV2Underlying(deployments.v2Pair, balance);
   const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
+  const unlockBlocks = useBorrowUnlockDelay();
+  // One value, read once and used both to count the prompts and to decide whether to send an
+  // approval, so the sentence above the button and the behaviour of the button are the same
+  // decision rather than two that happen to agree. Computing them from the read separately leaves
+  // the promise true only for as long as nobody edits one of the two expressions.
+  //
+  // An allowance that could not be read counts as zero rather than as whatever TanStack Query still
+  // has cached, which for an errored refetch is the previous block's answer. Zero over-promises a
+  // prompt instead of under-promising one — a confirmation that does not appear is a pleasant
+  // surprise, one that does is a broken instruction — and it is the direction that fails closed:
+  // an approval sent against an allowance that turns out to be sufficient is redundant, one skipped
+  // against an allowance that turns out not to be reverts the deposit.
+  const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
+  const confirmations = allowanceValue < balance ? 2 : 1;
+  const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
 
   return (
     <div className="card p-5 space-y-4">
@@ -347,13 +374,26 @@ function DepositV2Card({
 
         <BorrowingCapacity capacity={capacity} isError={lpUsdError} config={config} />
 
+        {/* No amount to choose: the whole balance goes in as one position. withdraw() takes no
+            amount and requires the position's debt to be zero, so what a partial deposit would
+            really buy is the option to split the LP across positions and exit one of them while
+            the other keeps borrowing. That is a portfolio decision, not a deposit-form decision,
+            and putting it behind an LP-denominated input — a field that reads 0.000084 for a
+            five-figure balance — asks for it in the one unit the user cannot reason about. */}
+        <DepositTerms
+          collateral="Your whole LP balance goes in as one position."
+          borrowSymbol={borrowSymbol}
+          confirmations={confirmations}
+          delay={unlockBlocks}
+        />
+
         {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
             the cards come from a subgraph query that can lag the chain, so a collateral type can
             still be offered here after being suspended. An unread config disables the button too —
             the alternative is sending a deposit() the protocol may reject and charging the user gas
             to find out. */}
         <ActionButton
-          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: (allowance as bigint) ?? 0n}}
+          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: allowanceValue}}
           address={deployments.positionManager}
           abi={positionManagerAbi}
           functionName="deposit"
@@ -361,21 +401,15 @@ function DepositV2Card({
           label="Deposit full balance"
           disabled={balance === 0n || borrowAsset === '' || !config?.enabled}
           onConfirmed={() => {
+            setDeposited(true);
             refetchBalance();
             refetchAllowance();
             onDone();
           }}
         />
-        {/* No amount to choose: the whole balance goes in as one position. withdraw() takes no
-            amount and requires the position's debt to be zero, so what a partial deposit would
-            really buy is the option to split the LP across positions and exit one of them while
-            the other keeps borrowing. That is a portfolio decision, not a deposit-form decision,
-            and putting it behind an LP-denominated input — a field that reads 0.000084 for a
-            five-figure balance — asks for it in the one unit the user cannot reason about. */}
+        {deposited && <DepositedNote unlockBlocks={unlockBlocks} />}
         <p className="text-xs text-[var(--muted)]">
-          Deposits your whole LP balance as a single position. You can withdraw it once the
-          position&apos;s debt is fully repaid. Protocol-wide borrow caps may limit you to less than
-          your LTV limit.
+          Protocol-wide borrow caps may limit you to less than your LTV limit.
         </p>
       </div>
     </div>
@@ -423,6 +457,93 @@ function BorrowingCapacity({
   );
 }
 
+/**
+ * What the deposit commits the user to, stated before the button rather than discovered after it.
+ *
+ * Everything here was already true and none of it was on the form. The page offered a signature
+ * that hands over custody of an LP, fixes the borrow asset permanently, costs one or two wallet
+ * confirmations and does not permit a borrow for some blocks afterwards — and said, in grey text
+ * beneath the button, only that the LP comes back when the debt is repaid.
+ *
+ * Ordered by consequence, not by sequence. The borrow asset leads because it is the only choice on
+ * this form that cannot be undone without unwinding the whole position, and it is the one the form
+ * presented as a mere dropdown.
+ */
+function DepositTerms({
+  collateral,
+  borrowSymbol,
+  confirmations,
+  delay,
+}: {
+  /** What is handed over, phrased for the collateral type: a whole balance, or one NFT. */
+  collateral: string;
+  /** Symbol of the pool the position will be bound to, or undefined while none is selected. */
+  borrowSymbol: string | undefined;
+  /** Wallet prompts this deposit will raise, approval included. */
+  confirmations: number;
+  /**
+   * Blocks between the deposit and the first block that will accept a borrow, or undefined while
+   * the figure is unread. Passed in rather than read here so that the delay quoted before the
+   * deposit and the one quoted in the note after it come from one read on one card, instead of two
+   * observers that agree only for as long as they are configured identically.
+   */
+  delay: bigint | undefined;
+}) {
+  return (
+    <div className="rounded-lg border border-[var(--border)] px-3 py-2.5 space-y-1.5">
+      <p className="text-xs font-medium text-[var(--muted-strong)]">Before you deposit</p>
+      <ul className="text-xs text-[var(--muted)] space-y-1">
+        {/* Named first and in full. `borrowAsset` is written into the position at deposit and has
+            no setter — every later path reads it, none of them assigns it — so switching assets
+            means repaying the debt, withdrawing the LP and depositing again. The picker above gives
+            no hint that the choice outlives the click. */}
+        <li>
+          {borrowSymbol === undefined ? (
+            'The borrow asset you pick above is fixed for the life of this position. Changing it later means repaying in full, withdrawing, and depositing again.'
+          ) : (
+            <>
+              This position will borrow <span className="text-[var(--foreground)]">{borrowSymbol}</span>{' '}
+              and nothing else, for as long as it is open. Changing that means repaying in full,
+              withdrawing, and depositing again.
+            </>
+          )}
+        </li>
+        <li>{collateral} Koreth holds it until the position&apos;s debt is back to zero.</li>
+        <li>
+          {confirmations === 1
+            ? 'One wallet confirmation.'
+            : `${confirmations} wallet confirmations, back to back: an approval, then the deposit.`}
+        </li>
+        {/* Stated here rather than only counted down afterwards. The delay is protocol-wide, so it
+            is knowable before the deposit that starts it — and a user who expects to borrow in the
+            same sitting is owed that before they sign, not as a greyed-out button. */}
+        <li>
+          {delay === undefined
+            ? 'Borrowing unlocks a few blocks after the deposit — a delay that stops a single transaction from moving the LP price and borrowing against it.'
+            : `Borrowing unlocks ${delay.toString()} block${delay === 1n ? '' : 's'} after the deposit — a delay that stops a single transaction from moving the LP price and borrowing against it.`}
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Closes the loop the deposit opens. The position it creates is rendered further down the page,
+ * which a user who has just watched a wallet dialog close has no particular reason to look at — so
+ * the card that took the LP says where it went, and repeats the one thing standing between the
+ * user and the borrow they came for.
+ */
+function DepositedNote({unlockBlocks}: {unlockBlocks: bigint | undefined}) {
+  return (
+    <p className="text-xs text-[var(--accent)]">
+      ✓ Deposited. Your position is under &ldquo;Your positions&rdquo; below
+      {unlockBlocks === undefined
+        ? ', where borrowing unlocks once the deposit cooldown has passed.'
+        : `, where borrowing unlocks ${unlockBlocks.toString()} block${unlockBlocks === 1n ? '' : 's'} after the deposit.`}
+    </p>
+  );
+}
+
 // viem decodes a multi-output function (positions() has 12 outputs) as a positional
 // tuple, not an object — so we index it rather than accessing named fields.
 type V3PositionResult = readonly [
@@ -438,6 +559,7 @@ type V3PositionResult = readonly [
 ];
 
 function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: SubgraphPool[]; onDone: () => void}) {
+  const [deposited, setDeposited] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
   const {data: nftCount, refetch: refetchCount} = useReadContract({address: V3_NFT_MANAGER, abi: nftManagerAbi, functionName: 'balanceOf', args: [owner]});
   const n = Number((nftCount as bigint) ?? 0n);
@@ -495,6 +617,8 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
   });
   // One config for every row: the risk parameters are per LP type, not per NFT.
   const config = useCollateralConfig(LP_TYPE_V3);
+  const unlockBlocks = useBorrowUnlockDelay();
+  const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
 
   return (
     <div className="card p-5 space-y-4">
@@ -535,6 +659,15 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
               />
             </div>
           )}
+          {/* One confirmation, not two: the NFT approval is its own visible step above rather than
+              a leg folded into the button, so by the time a Deposit is clickable it has already
+              been given. */}
+          <DepositTerms
+            collateral="The position you choose below goes in on its own."
+            borrowSymbol={borrowSymbol}
+            confirmations={1}
+            delay={unlockBlocks}
+          />
           <div>
             {eligible.map(({id, token0, token1, fee, tickLower, tickUpper}, i) => {
               // A per-call `failure` is one oracle reverting; `valuesError` is the multicall never
@@ -576,6 +709,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
                   label="Deposit"
                   disabled={borrowAsset === '' || !approvedAll || !config?.enabled}
                   onConfirmed={() => {
+                    setDeposited(true);
                     refetchCount();
                     onDone();
                   }}
@@ -588,6 +722,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
               design, since uncollected fees are swept to the borrower at liquidation rather than
               seized. A user comparing this figure with Uniswap's, which does include them, would
               otherwise have no way to account for the gap. */}
+          {deposited && <DepositedNote unlockBlocks={unlockBlocks} />}
           <p className="text-xs text-[var(--muted)]">
             Values cover your liquidity only. Uncollected fees stay yours and are not counted as
             collateral. Protocol-wide borrow caps may limit you to less than your LTV limit.
@@ -599,23 +734,42 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
 }
 
 /**
+ * How many blocks must pass after the deposit block before borrow() will accept a draw.
+ *
  * borrow() requires `block.number > depositBlock + borrowCooldownBlocks`: an anti-manipulation
  * delay that makes depositing and borrowing in the same block impossible. Until it elapses the
  * Borrow button reverted BORROW_COOLDOWN with nothing on screen to explain the failure, which
  * reads as a broken protocol rather than as a deliberate wait.
  *
- * `ready` is false while any of the three reads is still in flight — an unknown cooldown is
- * treated as not elapsed, so the button is never enabled on an assumption.
+ * That comparison is strict, so the first block satisfying it is one past the sum: the wait is one
+ * block longer than the configured figure. Derived here rather than at each call site so the delay
+ * quoted on the deposit form and the one counted down on the position card cannot disagree by that
+ * block.
+ *
+ * Read without a position, because the figure is protocol-wide: that is what lets the deposit form
+ * state the delay before the deposit that starts it, rather than leaving it to be discovered as a
+ * disabled button afterwards.
+ */
+function useBorrowUnlockDelay(): bigint | undefined {
+  const {data, isError} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'borrowCooldownBlocks'});
+  if (isError || data === undefined) return undefined;
+  return (data as bigint) + 1n;
+}
+
+/**
+ * Where a position stands against that delay. `ready` is false while any of the reads is still in
+ * flight — an unknown cooldown is treated as not elapsed, so the button is never enabled on an
+ * assumption. `blocksLeft` is undefined in exactly that case, which the card reports rather than
+ * showing a button that is disabled for no stated reason.
  */
 function useBorrowCooldown(depositBlock: bigint | undefined): {ready: boolean; blocksLeft: bigint | undefined} {
-  const {data: cooldownBlocks} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'borrowCooldownBlocks'});
+  const delay = useBorrowUnlockDelay();
   const {data: blockNumber} = useBlockNumber({watch: true});
 
-  if (depositBlock === undefined || cooldownBlocks === undefined || blockNumber === undefined) {
+  if (depositBlock === undefined || delay === undefined || blockNumber === undefined) {
     return {ready: false, blocksLeft: undefined};
   }
-  // The contract's check is strict, so the first block that satisfies it is one past the sum.
-  const readyAt = depositBlock + (cooldownBlocks as bigint) + 1n;
+  const readyAt = depositBlock + delay;
   if (blockNumber >= readyAt) return {ready: true, blocksLeft: 0n};
   return {ready: false, blocksLeft: readyAt - blockNumber};
 }
@@ -743,11 +897,15 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             available as loans are repaid.
           </p>
         ) : null}
-        {cooldown.blocksLeft !== undefined && cooldown.blocksLeft > 0n && (
+        {/* Both ways the cooldown holds the button down are stated. It is not enough to report the
+            countdown: `ready` is also false while the reads behind it are in flight, and that case
+            used to render nothing at all — a disabled Borrow button with every figure above it
+            looking healthy, which is indistinguishable from a broken page. */}
+        {!cooldown.ready && (
           <p className="text-xs text-[var(--muted)]">
-            Borrowing unlocks in {cooldown.blocksLeft.toString()} block
-            {cooldown.blocksLeft === 1n ? '' : 's'} — a short delay after each deposit that stops a
-            single transaction from moving the price and borrowing against it.
+            {cooldown.blocksLeft === undefined
+              ? 'Checking how long is left of the deposit cooldown — borrowing stays locked until that is known.'
+              : `Borrowing unlocks in ${cooldown.blocksLeft.toString()} block${cooldown.blocksLeft === 1n ? '' : 's'} — a short delay after each deposit that stops a single transaction from moving the price and borrowing against it.`}
           </p>
         )}
       </div>
