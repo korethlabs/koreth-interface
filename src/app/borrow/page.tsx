@@ -364,9 +364,16 @@ function DepositV2Card({
         <div>
           <p className="text-xs text-[var(--muted)]">Your LP balance</p>
           <UsdValue value={lpUsd} isError={lpUsdError} className="text-2xl font-semibold tabular-nums" />
+          {/* Named rather than left as a bare pair of amounts. One of these two tickers is very
+              often also the ticker of a pool in the selector above, and unlabelled the line reads as
+              a statement about the loan: a user who picks DAI and then sees "11,532.69 USDC" under
+              their balance has no way to tell that the USDC is a leg of the collateral they are
+              locking rather than something about the asset they just chose to borrow. Written with
+              "+" for the same reason — "/" is how a pair is named, which is what the header above
+              already does, and it invites the two amounts to be read as a ratio. */}
           {underlying && (
             <p className="text-xs text-[var(--muted)] tabular-nums">
-              {formatTokenAmount(underlying.amount0, underlying.token0)} /{' '}
+              Made up of {formatTokenAmount(underlying.amount0, underlying.token0)} +{' '}
               {formatTokenAmount(underlying.amount1, underlying.token1)}
             </p>
           )}
