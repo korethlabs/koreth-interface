@@ -20,6 +20,17 @@ interface Props {
   label: string;
   disabled?: boolean;
   onConfirmed?: () => void;
+  /**
+   * Raised for as long as a click is being served, so the caller can freeze the controls the
+   * transaction was built from.
+   *
+   * A click captures `args` and `approve` and then awaits — an allowance read, then up to three
+   * confirmations. The inputs behind those values stay editable throughout, so a user who retypes
+   * the amount, or switches the collateral pair, is shown one deposit while another is on its way to
+   * their wallet. Re-reading the inputs at send time would be worse: it would send something the
+   * user never clicked for. What is wrong is that the form still invites an edit it will ignore.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 type Step = 'idle' | 'approving' | 'sending';
@@ -33,7 +44,7 @@ type Step = 'idle' | 'approving' | 'sending';
  * moment they ask — a value captured at render is one the caller polled at some earlier block, and
  * acting on it either sends an approval that was not needed or skips one that was.
  */
-export function ActionButton({approve, address, abi, functionName, args, label, disabled, onConfirmed}: Props) {
+export function ActionButton({approve, address, abi, functionName, args, label, disabled, onConfirmed, onBusyChange}: Props) {
   const {writeContractAsync} = useWriteContract();
   const publicClient = usePublicClient();
   const {address: account} = useAccount();
@@ -48,6 +59,7 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
   async function run() {
     if (!publicClient || !account || running.current) return;
     running.current = true;
+    onBusyChange?.(true);
     setError('');
 
     async function sendApproval(amount: bigint) {
@@ -92,6 +104,7 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
       setError(e instanceof Error ? e.message.split('\n')[0] : String(e));
     } finally {
       running.current = false;
+      onBusyChange?.(false);
       setStep('idle');
     }
   }

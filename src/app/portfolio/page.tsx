@@ -139,6 +139,7 @@ function PositionCard({
   onDone: () => void;
 }) {
   const [repayAmt, setRepayAmt] = useState('');
+  const [repaying, setRepaying] = useState(false);
   const [repaidNote, setRepaidNote] = useState<string | null>(null);
   const id = BigInt(position.id);
   const asset = position.pool.borrowAsset as `0x${string}`;
@@ -193,20 +194,25 @@ function PositionCard({
       {!noDebt && (
         <div className="space-y-2">
           <div className="flex gap-2 items-start">
+            {/* Frozen while the repayment is being served: the amount was captured when the button
+                was clicked, and an editable field promises an edit that transaction will not get. */}
             <input
               value={repayAmt}
               onChange={(e) => setRepayAmt(e.target.value)}
               placeholder={`Repay ${symbol}`}
               inputMode="decimal"
-              className="input flex-1 p-2.5"
+              disabled={repaying}
+              className="input flex-1 p-2.5 disabled:opacity-60"
             />
             <button
               onClick={() => setRepayAmt(formatUnits(debtBn, decimals))}
-              className="btn-ghost px-3 text-sm"
+              disabled={repaying}
+              className="btn-ghost px-3 text-sm disabled:opacity-40"
             >
               Max
             </button>
             <ActionButton
+              onBusyChange={setRepaying}
               approve={{token: asset, spender: deployments.lendingEngine, amount: parsed}}
               address={deployments.lendingEngine}
               abi={lendingEngineAbi}

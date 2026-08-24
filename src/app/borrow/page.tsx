@@ -260,16 +260,18 @@ function BorrowAssetSelect({
   pools,
   value,
   onChange,
+  disabled,
 }: {
   pools: SubgraphPool[];
   value: string;
   onChange: (v: `0x${string}`) => void;
+  disabled?: boolean;
 }) {
   // Both deposit cards render one of these, and two radio groups sharing a name would behave as a
   // single one — picking in either would clear the other's selection.
   const group = useId();
   return (
-    <fieldset>
+    <fieldset disabled={disabled} className="disabled:opacity-60">
       <legend className="block text-xs text-[var(--muted)] mb-1">Borrow asset</legend>
       {pools.length === 0 ? (
         <p className="text-sm text-[var(--muted)] py-2.5">No lending pools available yet.</p>
@@ -326,6 +328,7 @@ function V2DepositCard({
   onDone: () => void;
 }) {
   const [deposited, setDeposited] = useState(false);
+  const [depositing, setDepositing] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
   const {pair, setPair} = useAcceptedPairChoice(accepted);
   const pairGroup = useId();
@@ -445,7 +448,10 @@ function V2DepositCard({
           rather than what this wallet happens to have, which is the difference between "Koreth does
           not accept WETH/USDT" and "you have no WETH/USDT to deposit" — and the balance is read
           anyway to decide, so stating it costs nothing. */}
-      <fieldset>
+      {/* Frozen while a deposit is being served. The pair decides which token is approved and which
+          LP is deposited, both captured when the button was clicked — a switch made while the
+          wallet is asking would leave the card naming one pair and the prompt naming another. */}
+      <fieldset disabled={depositing} className="disabled:opacity-60">
         <legend className="block text-xs text-[var(--muted)] mb-1">Collateral pair</legend>
         <div className="flex flex-wrap gap-1.5">
           {accepted.map((p, i) => {
@@ -482,7 +488,7 @@ function V2DepositCard({
         </div>
       </fieldset>
 
-      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
+      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} disabled={depositing} />
 
       <div className="space-y-3">
         {/* The USD value leads and the pair's two token amounts sit beneath it. The LP count itself
@@ -547,6 +553,7 @@ function V2DepositCard({
           functionName="deposit"
           args={[selected?.address, 0n, balance ?? 0n, borrowAsset]}
           label="Deposit full balance"
+          onBusyChange={setDepositing}
           // An unread balance disables the button as firmly as a zero one: the whole balance is the
           // deposit amount, so not knowing it means having nothing to send.
           disabled={!selected || balance === undefined || balance === 0n || borrowAsset === '' || !config?.enabled}
