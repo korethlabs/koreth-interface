@@ -1,8 +1,8 @@
 'use client';
 
 import {useState} from 'react';
-import {useAccount, useReadContract} from 'wagmi';
-import {erc20Abi, formatUnits, parseUnits} from 'viem';
+import {useAccount} from 'wagmi';
+import {formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
@@ -67,7 +67,7 @@ export default function PortfolioPage() {
             ) : (
               <div className="grid md:grid-cols-2 gap-4">
                 {borrows.map((p) => (
-                  <PositionCard key={p.id} position={p} owner={address!} onDone={() => refetchPositions()} />
+                  <PositionCard key={p.id} position={p} onDone={() => refetchPositions()} />
                 ))}
               </div>
             )}
@@ -133,14 +133,13 @@ function SupplyCard({
 
 function PositionCard({
   position,
-  owner,
   onDone,
 }: {
   position: SubgraphPosition;
-  owner: `0x${string}`;
   onDone: () => void;
 }) {
   const [repayAmt, setRepayAmt] = useState('');
+  const [repaying, setRepaying] = useState(false);
   const [repaidNote, setRepaidNote] = useState<string | null>(null);
   const id = BigInt(position.id);
   const asset = position.pool.borrowAsset as `0x${string}`;
@@ -150,13 +149,6 @@ function PositionCard({
   // about what it holds, owes, or can still draw — nor use different names for the same figure.
   const summary = usePositionSummary(id, position.pool.address as `0x${string}`, asset);
   const {debt: debtRaw, position: onChain} = summary;
-
-  const {data: allowance, refetch: refetchAllow} = useReadContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: 'allowance',
-    args: [owner, deployments.lendingEngine],
-  });
 
   // Decided on the read itself, not on `debtBn`, whose zero also stands for a debt that has not
   // landed: this is what makes the card offer a withdraw instead of a repay, and withdraw() reverts
@@ -168,7 +160,6 @@ function PositionCard({
 
   const refetchAll = () => {
     summary.refetch();
-    refetchAllow();
     onDone();
   };
 
@@ -203,21 +194,26 @@ function PositionCard({
       {!noDebt && (
         <div className="space-y-2">
           <div className="flex gap-2 items-start">
+            {/* Frozen while the repayment is being served: the amount was captured when the button
+                was clicked, and an editable field promises an edit that transaction will not get. */}
             <input
               value={repayAmt}
               onChange={(e) => setRepayAmt(e.target.value)}
               placeholder={`Repay ${symbol}`}
               inputMode="decimal"
-              className="input flex-1 p-2.5"
+              disabled={repaying}
+              className="input flex-1 p-2.5 disabled:opacity-60"
             />
             <button
               onClick={() => setRepayAmt(formatUnits(debtBn, decimals))}
-              className="btn-ghost px-3 text-sm"
+              disabled={repaying}
+              className="btn-ghost px-3 text-sm disabled:opacity-40"
             >
               Max
             </button>
             <ActionButton
-              approve={{token: asset, spender: deployments.lendingEngine, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+              onBusyChange={setRepaying}
+              approve={{token: asset, spender: deployments.lendingEngine, amount: parsed}}
               address={deployments.lendingEngine}
               abi={lendingEngineAbi}
               functionName="repay"
@@ -232,10 +228,15 @@ function PositionCard({
               }}
             />
           </div>
+          {/* No prompt count. The button reads the allowance when it is clicked, and the number of
+              approvals depends on what it finds — a leftover allowance on a token like USDT has to
+              be cleared before a new one can be set, which is a confirmation of its own. Naming a
+              number here would mean predicting from a value read at render what the button decides
+              from a value read at click, and the two disagreeing is worse than saying neither. */}
           <p className="text-xs text-[var(--muted)]">
-            Repaying returns borrowed {symbol} to the protocol and lowers your debt. When your {symbol}
-            allowance is too low you&rsquo;ll first confirm an approval, then the repayment (two wallet
-            prompts). Clear your debt fully to withdraw your collateral.
+            Repaying returns borrowed {symbol} to the protocol and lowers your debt. If your {symbol}{' '}
+            allowance is too low you&rsquo;ll confirm an approval first, then the repayment. Clear your
+            debt fully to withdraw your collateral.
           </p>
         </div>
       )}

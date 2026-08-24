@@ -260,16 +260,18 @@ function BorrowAssetSelect({
   pools,
   value,
   onChange,
+  disabled,
 }: {
   pools: SubgraphPool[];
   value: string;
   onChange: (v: `0x${string}`) => void;
+  disabled?: boolean;
 }) {
   // Both deposit cards render one of these, and two radio groups sharing a name would behave as a
   // single one — picking in either would clear the other's selection.
   const group = useId();
   return (
-    <fieldset>
+    <fieldset disabled={disabled} className="disabled:opacity-60">
       <legend className="block text-xs text-[var(--muted)] mb-1">Borrow asset</legend>
       {pools.length === 0 ? (
         <p className="text-sm text-[var(--muted)] py-2.5">No lending pools available yet.</p>
@@ -326,6 +328,7 @@ function V2DepositCard({
   onDone: () => void;
 }) {
   const [deposited, setDeposited] = useState(false);
+  const [depositing, setDepositing] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
   const {pair, setPair} = useAcceptedPairChoice(accepted);
   const pairGroup = useId();
@@ -412,19 +415,22 @@ function V2DepositCard({
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
-  // One value, read once and used both to count the prompts and to decide whether to send an
-  // approval, so the sentence above the button and the behaviour of the button are the same
-  // decision rather than two that happen to agree. Computing them from the read separately leaves
-  // the promise true only for as long as nobody edits one of the two expressions.
+  // Used only to tell the user how many wallet prompts to expect. The button re-reads the allowance
+  // at the moment it is clicked and decides for itself, so this figure describes the deposit rather
+  // than governing it: a stale one costs the user a surprise, not a reverted transaction.
   //
   // An allowance that could not be read counts as zero rather than as whatever TanStack Query still
   // has cached, which for an errored refetch is the previous block's answer. Zero over-promises a
   // prompt instead of under-promising one — a confirmation that does not appear is a pleasant
-  // surprise, one that does is a broken instruction — and it is the direction that fails closed:
-  // an approval sent against an allowance that turns out to be sufficient is redundant, one skipped
-  // against an allowance that turns out not to be reverts the deposit.
+  // surprise, one that does is a broken instruction.
+  //
+  // Three when there is a short but non-zero allowance to clear first, which is the same condition
+  // the button resets on. Counting that case as two would be the one direction that misleads:
+  // the extra prompt arrives unannounced, and an unexplained wallet request in the middle of a
+  // sequence is what a user reads as the app having been compromised.
   const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
-  const confirmations = allowanceValue < (balance ?? 0n) ? 2 : 1;
+  const confirmations =
+    allowanceValue >= (balance ?? 0n) ? 1 : allowanceValue > 0n ? 3 : 2;
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
   const selectedLabel = selected ? pairLabel(selected, symbolOf) : undefined;
 
@@ -442,7 +448,10 @@ function V2DepositCard({
           rather than what this wallet happens to have, which is the difference between "Koreth does
           not accept WETH/USDT" and "you have no WETH/USDT to deposit" — and the balance is read
           anyway to decide, so stating it costs nothing. */}
-      <fieldset>
+      {/* Frozen while a deposit is being served. The pair decides which token is approved and which
+          LP is deposited, both captured when the button was clicked — a switch made while the
+          wallet is asking would leave the card naming one pair and the prompt naming another. */}
+      <fieldset disabled={depositing} className="disabled:opacity-60">
         <legend className="block text-xs text-[var(--muted)] mb-1">Collateral pair</legend>
         <div className="flex flex-wrap gap-1.5">
           {accepted.map((p, i) => {
@@ -479,7 +488,7 @@ function V2DepositCard({
         </div>
       </fieldset>
 
-      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
+      <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} disabled={depositing} />
 
       <div className="space-y-3">
         {/* The USD value leads and the pair's two token amounts sit beneath it. The LP count itself
@@ -538,12 +547,13 @@ function V2DepositCard({
             the alternative is sending a deposit() the protocol may reject and charging the user gas
             to find out. */}
         <ActionButton
-          approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n, allowance: allowanceValue}}
+          approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n}}
           address={deployments.positionManager}
           abi={positionManagerAbi}
           functionName="deposit"
           args={[selected?.address, 0n, balance ?? 0n, borrowAsset]}
           label="Deposit full balance"
+          onBusyChange={setDepositing}
           // An unread balance disables the button as firmly as a zero one: the whole balance is the
           // deposit amount, so not knowing it means having nothing to send.
           disabled={!selected || balance === undefined || balance === 0n || borrowAsset === '' || !config?.enabled}
@@ -659,7 +669,10 @@ function DepositTerms({
         <li>
           {confirmations === 1
             ? 'One wallet confirmation.'
-            : `${confirmations} wallet confirmations, back to back: an approval, then the deposit.`}
+            : confirmations === 2
+              ? 'Two wallet confirmations, back to back: an approval, then the deposit.'
+              : 'Three wallet confirmations, back to back: your current allowance is cleared to zero, ' +
+                'set to the deposit amount, then the deposit itself.'}
         </li>
         {/* Stated here rather than only counted down afterwards. The delay is protocol-wide, so it
             is knowable before the deposit that starts it — and a user who expects to borrow in the

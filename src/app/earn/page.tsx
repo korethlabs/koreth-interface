@@ -77,12 +77,12 @@ function PoolSupplyCard({
   paused: boolean | undefined;
 }) {
   const [amount, setAmount] = useState('');
+  const [supplying, setSupplying] = useState(false);
   const asset = pool.borrowAsset as `0x${string}`;
   const poolAddr = pool.address as `0x${string}`;
   const {decimals, symbol} = pool;
 
   const {data: walletBal, isError: walletBalError, refetch: refetchBal} = useReadContract({address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, refetch: refetchAllow} = useReadContract({address: asset, abi: erc20Abi, functionName: 'allowance', args: [owner, poolAddr]});
   const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
   const {data: reserve} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'reserveFactorBps'});
   const lender = usePoolLenderState(poolAddr, asset, owner);
@@ -124,7 +124,6 @@ function PoolSupplyCard({
 
   const onDone = () => {
     refetchBal();
-    refetchAllow();
     lender?.refetch();
   };
 
@@ -173,7 +172,7 @@ function PoolSupplyCard({
           <span>Wallet</span>
           <button
             onClick={() => balance !== undefined && setAmount(formatUnits(balance, decimals))}
-            disabled={balance === undefined}
+            disabled={balance === undefined || supplying}
             className="hover:text-[var(--foreground)] disabled:opacity-40"
           >
             {balance === undefined ? '—' : fmt(Number(formatUnits(balance, decimals)))} {symbol} · Max
@@ -187,21 +186,25 @@ function PoolSupplyCard({
           </p>
         )}
         <div className="flex gap-2">
+          {/* Frozen while the supply is being served: the amount was captured when the button was
+              clicked, and an editable field promises an edit that transaction will not receive. */}
           <input
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.0"
             inputMode="decimal"
-            className="input flex-1 p-2.5"
+            disabled={supplying}
+            className="input flex-1 p-2.5 disabled:opacity-60"
           />
           <ActionButton
-            approve={{token: asset, spender: poolAddr, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+            approve={{token: asset, spender: poolAddr, amount: parsed}}
             address={poolAddr}
             abi={lendingPoolAbi}
             functionName="supply"
             args={[parsed]}
             label="Supply"
             disabled={!canSupply}
+            onBusyChange={setSupplying}
             onConfirmed={() => {
               setAmount('');
               onDone();
