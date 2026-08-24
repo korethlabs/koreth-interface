@@ -146,12 +146,17 @@ export default function BorrowPage() {
                     all about one account — most sharply the note confirming a deposit, which
                     persists for the session and would otherwise carry a "✓ Deposited" from the
                     previous wallet onto a card now describing balances the new one has never
-                    deposited. */}
+                    deposited.
+
+                    The collateral type is in the key as well as the address, because these two are
+                    siblings and each is mounted only while the RiskManager still accepts its type:
+                    on the address alone they would share a key, and suspending one type would hand
+                    its state to the other rather than unmounting it. */}
                 {enabled.has('UniswapV2') && (
-                  <DepositV2Card key={address} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <DepositV2Card key={`v2:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
                 {enabled.has('UniswapV3') && (
-                  <V3DepositCard key={address} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
               </div>
             )}
