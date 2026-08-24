@@ -3,10 +3,16 @@
 // a key the app relies on but the stub forgets would fail CI for a reason that has nothing to
 // do with the change under test.
 
-/** Keys read out of core's deployments/local.json, in the order they are emitted. */
+/**
+ * Keys read out of core's deployments/local.json, in the order they are emitted.
+ *
+ * No collateral pair appears here. Which pools the protocol accepts is a set it curates through
+ * whitelist events, and naming one of them in a generated config would be a second copy of that set
+ * for the app to trust; the app enumerates it from the index and confirms it against ProtocolCore.
+ */
 export const DEPLOYMENT_KEYS = [
     "chainId", "deployBlock", "core", "positionManager", "lendingEngine", "liquidationEngine",
-    "riskManager", "priceFeedRegistry", "v2Adapter", "v3Adapter", "weth", "usdc", "usdt", "dai", "v2Pair",
+    "riskManager", "priceFeedRegistry", "v2Adapter", "v3Adapter", "weth", "usdc", "usdt", "dai",
 ];
 
 /** Exported ABI name -> forge artifact path under core's out/. ERC20 comes from viem instead. */

@@ -30,17 +30,22 @@ export type V2Underlying = {
  * Returns undefined rather than zeroes when a read is missing: zero amounts would describe an empty
  * position, which is a different claim from not knowing yet.
  */
-export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underlying | undefined {
+export function useV2Underlying(pair: `0x${string}` | undefined, balance: bigint): V2Underlying | undefined {
   const {data, isError} = useReadContracts({
-    contracts: [
-      {address: pair, abi: v2PairAbi, functionName: 'getReserves'},
-      {address: pair, abi: erc20Abi, functionName: 'totalSupply'},
-      {address: pair, abi: v2PairAbi, functionName: 'token0'},
-      {address: pair, abi: v2PairAbi, functionName: 'token1'},
-    ],
+    // Nothing to describe before a pair is chosen, so nothing is listed. `enabled` already stops the
+    // request, but an entry with no address is not a call anyone could make, and building one leaves
+    // wagmi to key and validate a contract that does not exist.
+    contracts: pair
+      ? [
+          {address: pair, abi: v2PairAbi, functionName: 'getReserves'},
+          {address: pair, abi: erc20Abi, functionName: 'totalSupply'},
+          {address: pair, abi: v2PairAbi, functionName: 'token0'},
+          {address: pair, abi: v2PairAbi, functionName: 'token1'},
+        ]
+      : [],
     // Reserves move with every trade against the pair, so the composition is polled alongside the
     // USD value it sits under rather than being pinned to the moment the page mounted.
-    query: {enabled: balance > 0n, refetchInterval: LIVE_REFETCH_MS},
+    query: {enabled: !!pair && balance > 0n, refetchInterval: LIVE_REFETCH_MS},
   });
 
   // `enabled: false` stops the query, it does not evict what it already fetched, and none of the
@@ -53,10 +58,10 @@ export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underly
   // balance into amounts — serving them as current would state a composition the pair has moved on
   // from. Per-call failures land as an undefined result and are caught by the checks below.
   if (isError) return undefined;
-  const reserves = data?.[0].result;
-  const totalSupply = data?.[1].result;
-  const token0 = data?.[2].result;
-  const token1 = data?.[3].result;
+  const reserves = data?.[0]?.result;
+  const totalSupply = data?.[1]?.result;
+  const token0 = data?.[2]?.result;
+  const token1 = data?.[3]?.result;
   if (reserves === undefined || totalSupply === undefined || !token0 || !token1) return undefined;
   // The divisor, read from the pair rather than derived here. A supply of zero contradicts the
   // non-zero balance checked above, so it means the two reads landed on different states.

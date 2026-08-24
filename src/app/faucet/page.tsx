@@ -32,14 +32,17 @@ export default function FaucetPage() {
     <main className="max-w-2xl mx-auto px-6 py-16">
       <h1 className="text-3xl font-semibold tracking-tight">Faucet</h1>
       <p className="mt-2 text-[var(--muted-strong)]">
-        Fund your connected wallet on the fork — gas, stablecoins, and Uniswap V2 LP to test the app.
+        Fund your connected wallet on the fork — gas, stablecoins, and Uniswap LP to test the app.
       </p>
 
       <div className="card p-6 mt-8 space-y-5">
         <ul className="text-sm text-[var(--muted-strong)] space-y-1.5">
           <li>· 100 ETH (gas)</li>
-          <li>· 100,000 USDC · 30,000 USDT · 30,000 DAI</li>
-          <li>· WETH + a fresh WETH/USDC <strong>V2 LP</strong> and a <strong>V3 position (NFT)</strong> — both usable as collateral</li>
+          <li>· 100,000 each of USDC, USDT and DAI, plus WETH</li>
+          <li>
+            · A <strong>V2 LP</strong> balance and a full-range <strong>V3 position (NFT)</strong>{' '}
+            for WETH/USDC, WETH/USDT and WETH/DAI — six holdings, all usable as collateral
+          </li>
         </ul>
 
         {!isConnected ? (

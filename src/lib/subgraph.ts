@@ -76,6 +76,20 @@ export interface SubgraphPool {
 }
 
 /**
+ * An AMM pool the protocol accepts as collateral backing.
+ *
+ * Deliberately just an address. `ProtocolCore.supportedLpPools` is a mapping, so enumerating it is
+ * the one thing the index can do that the chain cannot — and it is the only thing taken from here.
+ * Which DEX version the pool belongs to, which tokens it holds and whether it is still accepted
+ * right now are all read from the chain by useAcceptedCollateral, because the index answers them
+ * as of a block that may not be the current one, and a deposit is settled against the current one.
+ */
+export interface SubgraphCollateralPool {
+  id: string;
+  address: string;
+}
+
+/**
  * Risk parameters for one LP type. These are set once in RiskManager and apply across every
  * pool, so they are keyed by collateral type rather than by market.
  */
