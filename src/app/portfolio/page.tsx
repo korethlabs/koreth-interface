@@ -6,17 +6,15 @@ import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
-import {usePositionValue} from '@/hooks/usePositionValue';
-import {NO_DEBT_HEALTH_FACTOR} from '@/hooks/useCollateralConfig';
-import {isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
-import {usePoolLenderState, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
+import {isOpenOnChain, positionTitle} from '@/hooks/useOnChainPosition';
+import {usePositionSummary} from '@/hooks/usePositionSummary';
+import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
 import {type SubgraphPosition, type SubgraphSupplyPosition} from '@/lib/subgraph';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {PoolWithdraw} from '@/components/PoolWithdraw';
+import {HealthReadout, PositionStats} from '@/components/PositionStats';
 import {TokenChip} from '@/components/TokenChip';
-import {UsdValue} from '@/components/UsdValue';
-import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -24,16 +22,6 @@ function parseAmount(v: string, decimals: number): bigint {
   } catch {
     return 0n;
   }
-}
-
-// getHealthFactor returns exactly uint256.max when there is no debt, and that is the only case ∞
-// stands for: a position carrying dust against whole collateral also reaches an enormous factor,
-// and reading it as debt-free would be wrong. Those are capped rather than printed in full.
-function formatHealth(hf: bigint | undefined): string {
-  if (hf === undefined) return '—';
-  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
-  if (hf > 1_000n * 10n ** 18n) return '> 1000';
-  return Number(formatUnits(hf, 18)).toFixed(2);
 }
 
 export default function PortfolioPage() {
@@ -158,62 +146,29 @@ function PositionCard({
   const asset = position.pool.borrowAsset as `0x${string}`;
   const {symbol, decimals} = position.pool;
 
-  // Polled: debt accrues every block, and the health factor and capacity move with the LP price.
-  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
-  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({
-    address: deployments.lendingEngine,
-    abi: lendingEngineAbi,
-    functionName: 'getDebt',
-    args: [id],
-    query: live,
-  });
-  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({
-    address: deployments.positionManager,
-    abi: positionManagerAbi,
-    functionName: 'getHealthFactor',
-    args: [id],
-    query: live,
-  });
-  const {data: maxBorrow, isError: maxBorrowError} = useReadContract({
-    address: deployments.lendingEngine,
-    abi: lendingEngineAbi,
-    functionName: 'getMaxBorrow',
-    args: [id],
-    query: live,
-  });
+  // The same summary the borrow page acts on, so the two views of one position cannot disagree
+  // about what it holds, owes, or can still draw — nor use different names for the same figure.
+  const summary = usePositionSummary(id, position.pool.address as `0x${string}`, asset);
+  const {debt: debtRaw, position: onChain} = summary;
+
   const {data: allowance, refetch: refetchAllow} = useReadContract({
     address: asset,
     abi: erc20Abi,
     functionName: 'allowance',
     args: [owner, deployments.lendingEngine],
   });
-  const collateral = usePositionValue(id);
-  const {position: onChain, refetch: refetchOnChain} = useOnChainPosition(id);
 
-  // The rate this position is paying, from the same hook the borrow page prices a new draw with, so
-  // the two pages cannot quote different costs for the same debt. Previously read inline here with
-  // the utilization coalesced to zero, which showed the model's base rate — a real, confident,
-  // wrong number — whenever the pool state had not landed yet.
-  const market = usePoolMarket(position.pool.address as `0x${string}`, asset);
-
-  // An errored read counts as missing rather than as its last cached answer. Zero is not a safe
-  // stand-in here: it is what decides the card offers a withdraw instead of a repay, and withdraw()
-  // reverts on any outstanding debt.
-  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
+  // Decided on the read itself, not on `debtBn`, whose zero also stands for a debt that has not
+  // landed: this is what makes the card offer a withdraw instead of a repay, and withdraw() reverts
+  // on any outstanding debt. The coalesced figure only sizes the repay input, which a zero bounds
+  // harmlessly.
   const debtBn = debtRaw ?? 0n;
   const parsed = parseAmount(repayAmt, decimals);
   const noDebt = debtRaw === 0n;
 
   const refetchAll = () => {
-    refetchDebt();
-    refetchHealth();
+    summary.refetch();
     refetchAllow();
-    // Includes the position record: withdraw() closes it, and the collateral cell gates on that
-    // status rather than on the subgraph's.
-    refetchOnChain();
-    // A repayment returns cash to the pool and lowers its utilization, so the rate this position
-    // is quoted has changed as a result of the very action being confirmed.
-    market?.refetch();
     onDone();
   };
 
@@ -226,47 +181,17 @@ function PositionCard({
               deposits of the same pair carry the same name, and this is the card that asks which
               debt to repay. */}
           <h2 className="text-lg font-semibold leading-tight">{positionTitle(onChain, position.id)}</h2>
-          <p className="text-xs text-[var(--muted)]">Position #{position.id}</p>
+          <p className="text-xs text-[var(--muted)]">
+            Position #{position.id} · <span className="capitalize">{position.status}</span>
+          </p>
         </div>
-        <span className="text-sm text-[var(--muted-strong)] capitalize">{position.status}</span>
+        {/* The risk of the position, in the same place and the same words the borrow page puts it
+            in. This card used to show the bare ratio in the middle of the stat grid, which left the
+            figure that decides whether to repay looking like one more statistic. */}
+        <HealthReadout current={summary.healthFactor} />
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-        {/* Live, so it can't contradict the health factor two cells over. A closed position has
-            already had its LP returned, and getPositionValue would still price it — so the status
-            gating this comes from the position record itself, not from the index that lags it. */}
-        <Stat
-          label="Collateral"
-          value={
-            isOpenOnChain(onChain) ? (
-              <UsdValue {...collateral} approx={false} maximumFractionDigits={0} />
-            ) : (
-              '—'
-            )
-          }
-        />
-        <Stat
-          label="Debt"
-          value={
-            debtRaw === undefined
-              ? '—'
-              : `${Number(formatUnits(debtRaw, decimals)).toLocaleString('en-US', {maximumFractionDigits: 2})} ${symbol}`
-          }
-        />
-        <Stat
-          label="Borrow APR"
-          value={market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
-        />
-        <Stat label="Health" value={formatHealth(healthError ? undefined : (health as bigint | undefined))} />
-        <Stat
-          label="Max borrow"
-          value={
-            maxBorrowError || maxBorrow === undefined
-              ? '—'
-              : `${Number(formatUnits(maxBorrow as bigint, decimals)).toLocaleString('en-US', {maximumFractionDigits: 0})} ${symbol}`
-          }
-        />
-      </div>
+      <PositionStats summary={summary} symbol={symbol} decimals={decimals} />
 
       {repaidNote && (
         <p className="text-sm text-[var(--accent)]">
@@ -328,15 +253,6 @@ function PositionCard({
           onConfirmed={refetchAll}
         />
       )}
-    </div>
-  );
-}
-
-function Stat({label, value}: {label: string; value: React.ReactNode}) {
-  return (
-    <div>
-      <p className="text-[var(--muted)]">{label}</p>
-      <p className="font-medium">{value}</p>
     </div>
   );
 }

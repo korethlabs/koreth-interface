@@ -6,11 +6,12 @@ import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
-import {usePositionValue} from '@/hooks/usePositionValue';
-import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle, useOnChainPosition} from '@/hooks/useOnChainPosition';
+import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
-import {LIQUIDATION_HEALTH_FACTOR, NO_DEBT_HEALTH_FACTOR, borrowingCapacityUsd, liquidationDropBps, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {usePoolMarket} from '@/hooks/useLendingPool';
+import {BORROW_HEADROOM_BPS, usePositionSummary} from '@/hooks/usePositionSummary';
+import {HealthReadout, PositionStats} from '@/components/PositionStats';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
@@ -21,9 +22,6 @@ import {tokenInfo} from '@/lib/tokens';
 import {V3_NFT_MANAGER, V3_FEE, isFullRange, nftManagerAbi} from '@/lib/v3';
 
 const LP_COLOR = '#8b93ff';
-
-/** Share of a position's borrowing capacity the interface offers, in bps. See `available` below. */
-const BORROW_HEADROOM_BPS = 9_900n;
 
 /**
  * Health factor below which a borrow has to be acknowledged explicitly. Matches the threshold
@@ -99,50 +97,6 @@ function formatTokenAmount(raw: bigint, token: string): string {
   const {symbol, decimals} = tokenInfo(token);
   const n = Number(formatUnits(raw, decimals));
   return `${fmt(n, n >= 1_000 ? 2 : 4)} ${symbol}`;
-}
-
-// ∞ is reserved for the debt-free sentinel itself, so it cannot be read as "no debt" by a position
-// carrying a dust balance against whole collateral, whose factor is merely enormous. Those are
-// capped instead: past a certain point the digits stop distinguishing anything.
-function formatHealth(hf: bigint | undefined): string {
-  if (hf === undefined) return '—';
-  if (hf === NO_DEBT_HEALTH_FACTOR) return '∞';
-  if (hf > 1_000n * 10n ** 18n) return '> 1000';
-  return Number(formatUnits(hf, 18)).toFixed(2);
-}
-/**
- * The health factor restated as the fall in the LP that would reach the liquidation line, which is
- * the form of it a borrower can act on. Kept beside the factor rather than replacing it: the ratio
- * is the figure the protocol and every other interface speak in.
- */
-function formatLiquidationDistance(hf: bigint | undefined): string {
-  if (hf === undefined) return '—';
-  const drop = liquidationDropBps(hf);
-  if (drop === undefined) return 'No debt to liquidate';
-  // The two exact cases are decided on the factor itself rather than on the rounded distance, which
-  // cannot tell them apart. isLiquidatable clears a position at exactly 1.00, so the boundary is
-  // not yet executable, and saying a liquidation can be called where it would revert is the kind of
-  // claim this page is being made not to make.
-  if (hf < LIQUIDATION_HEALTH_FACTOR) return 'Liquidatable now';
-  if (hf === LIQUIDATION_HEALTH_FACTOR) return 'Liquidated by any further LP fall';
-  // Below a tenth of a percent the figure has to be described rather than printed: truncating it
-  // would render a real distance as `0.0%`, which reads as no fall being needed at all — the very
-  // claim the line above exists to reserve for the position that is actually on the line.
-  if (drop < 10n) return 'Liquidated by a fall of under 0.1%';
-  // Truncated rather than rounded to the nearest tenth, for the same reason the bps figure is:
-  // rounding 13.36% up to 13.4% would name a fall the position in fact survives, and the number is
-  // being read as the point at which the collateral is taken. "Over" rather than "at" for the same
-  // reason at the other end — isLiquidatable needs the factor strictly below 1.00, so a fall of
-  // exactly the distance shown still clears, and a truncated figure is in any case a lower bound.
-  return `Liquidated by a fall of over ${(Number(drop / 10n) / 10).toFixed(1)}%`;
-}
-
-function healthColor(hf: bigint | undefined): string {
-  if (hf === undefined || hf === NO_DEBT_HEALTH_FACTOR) return 'text-[var(--accent)]';
-  const v = Number(formatUnits(hf, 18));
-  if (v < 1.1) return 'text-[var(--danger)]';
-  if (v < 1.5) return 'text-[var(--warning)]';
-  return 'text-[var(--accent)]';
 }
 
 export default function BorrowPage() {
@@ -671,67 +625,17 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
   const {symbol, decimals} = position.pool;
-  const market = usePoolMarket(position.pool.address as `0x${string}`, position.pool.borrowAsset as `0x${string}`);
-
-  // Polled: debt accrues every block and both the health factor and the capacity are re-derived
-  // from the LP price, so a card left open would go on offering a headroom the chain has moved past.
-  const live = {refetchInterval: LIVE_REFETCH_MS} as const;
-  const {data: debt, isError: debtError, refetch: refetchDebt} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getDebt', args: [id], query: live});
-  const {data: health, isError: healthError, refetch: refetchHealth} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'getHealthFactor', args: [id], query: live});
-  const {data: maxBorrow, isError: maxBorrowError, refetch: refetchMax} = useReadContract({address: deployments.lendingEngine, abi: lendingEngineAbi, functionName: 'getMaxBorrow', args: [id], query: live});
-  const collateral = usePositionValue(id);
-  // The LP type comes off the position itself rather than from the subgraph's label, so the risk
-  // parameters shown are keyed to what the protocol recorded rather than to a name match.
-  const {position: pos, refetch: refetchPos} = useOnChainPosition(id);
-  const config = useCollateralConfig(pos?.lpType);
+  const summary = usePositionSummary(
+    id,
+    position.pool.address as `0x${string}`,
+    position.pool.borrowAsset as `0x${string}`,
+  );
+  const {debt, capacity, config, position: pos, fromCapacity, liquidityCap, available, liquidityBound} = summary;
   const cooldown = useBorrowCooldown(pos?.depositBlock);
 
-  // A read in error counts as missing rather than as its last successful answer, which TanStack
-  // Query keeps cached: a debt that stopped updating is the input the headroom below is most
-  // sensitive to, and a zero standing in for it reads as a position with nothing drawn.
-  const debtRaw = debtError ? undefined : (debt as bigint | undefined);
-  const capacityRaw = maxBorrowError ? undefined : (maxBorrow as bigint | undefined);
-  // getMaxBorrow is the position's total borrowing capacity, not what is left to draw: borrow()
-  // checks `currentDebt + amount <= maxBorrow`, so existing debt has to come off it first. Both
-  // reads have to be in before that subtraction means anything — treating a debt still in flight
-  // as zero would offer the whole capacity to a position that has already drawn most of it.
-  //
-  // borrow() then re-derives both sides at execution: it accrues interest first, so the debt is
-  // larger than the one read here, and it re-prices the LP through the oracle, so the capacity may
-  // be smaller. Offering the exact headroom therefore reverts EXCEEDS_MAX_LTV whenever either
-  // moves between the read and the block that mines the borrow. Aave's interface holds back the
-  // same 1% of its max borrow, for the same reason.
-  //
-  // The 1% comes off the capacity before the debt rather than off what is left after it. Both
-  // things it absorbs — accrued interest and a fall in the LP price — are sized by the position,
-  // not by its remaining headroom, so taking the cut afterwards would shrink the buffer to nothing
-  // exactly where it is needed: a position already near its limit. Clamped at zero, since 99% of
-  // capacity can be below a debt that has accrued past it.
-  const drawable = capacityRaw === undefined ? undefined : (capacityRaw * BORROW_HEADROOM_BPS) / 10_000n;
-  const fromCapacity =
-    debtRaw === undefined || drawable === undefined ? undefined : drawable > debtRaw ? drawable - debtRaw : 0n;
-  // The second bound, and the one the LTV arithmetic above knows nothing about: borrow() ends in
-  // pool.transferOut, which requires the amount to be at most the borrow asset actually held by the
-  // pool. A position with capacity to spare in a pool whose cash borrowers have already taken
-  // reverts INSUFFICIENT_LIQUIDITY, so offering the LTV headroom alone advertises a loan the pool
-  // cannot fund. Held back by the same 1% as the capacity, for a different reason: the cash can be
-  // drawn down by a borrow in an earlier block.
-  const liquidityCap =
-    market === undefined ? undefined : (market.liquidity * BORROW_HEADROOM_BPS) / 10_000n;
-  const available =
-    fromCapacity === undefined || liquidityCap === undefined
-      ? undefined
-      : fromCapacity < liquidityCap
-        ? fromCapacity
-        : liquidityCap;
-  // Which of the two bounds is binding. They are the same greyed-out button and entirely different
-  // situations: one is undone by repaying or depositing, the other only by someone else repaying.
-  // Ties count as capacity-bound, since that is the side the user can act on.
-  const liquidityBound = fromCapacity !== undefined && liquidityCap !== undefined && liquidityCap < fromCapacity;
   const parsed = parseAmount(amount, decimals);
-  const hf = healthError ? undefined : (health as bigint | undefined);
   const projected =
-    parsed > 0n && debtRaw !== undefined ? projectedHealthFactor(debtRaw + parsed, capacityRaw, config) : undefined;
+    parsed > 0n && debt !== undefined ? projectedHealthFactor(debt + parsed, capacity, config) : undefined;
   // Borrowing is capped at maxLtv, so no single borrow can push the health factor to the
   // liquidation line — what it does is decide how far the LP can fall before it gets there.
   // Below this the drop that would liquidate the position is small enough to be worth an explicit
@@ -767,56 +671,17 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             <p className="text-xs text-[var(--muted)]">Position #{position.id} · borrow {symbol}</p>
           </div>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-[var(--muted)]">Health</p>
-          {/* The projected value sits next to the current one rather than replacing it: the
-              question being asked is how much this borrow moves the number, which a single
-              figure cannot answer. */}
-          <p className="text-xl font-semibold tabular-nums leading-tight">
-            <span className={healthColor(hf)}>{formatHealth(hf)}</span>
-            {projected !== undefined && (
-              <>
-                <span className="text-[var(--muted)]"> → </span>
-                <span className={healthColor(projected)}>{formatHealth(projected)}</span>
-              </>
-            )}
-          </p>
-          {/* Describes the borrow being prepared once there is an amount, since that is the
-              exposure the user is deciding on. Not fallen back to the current distance when the
-              projection cannot be computed: that figure is real but answers the question the user
-              stopped asking as soon as they typed an amount, and it always reads safer than the
-              one they are about to accept. */}
-          <p className="text-xs text-[var(--muted)]">{formatLiquidationDistance(parsed > 0n ? projected : hf)}</p>
-        </div>
+        {/* The projection is passed whenever an amount is being prepared, including when it could
+            not be computed: the readout distinguishes the two, and showing the current distance
+            under a typed amount would describe the position the user is leaving rather than the
+            one they are about to take on. */}
+        <HealthReadout
+          current={summary.healthFactor}
+          projected={parsed > 0n ? {value: projected} : undefined}
+        />
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm border-y border-[var(--border)] py-3">
-        <div>
-          <p className="text-[var(--muted)] text-xs">Collateral</p>
-          {/* Priced live, from the same call the health factor above divides by. The subgraph's
-              deposit-time figure would sit next to a health factor that had already moved. */}
-          <p className="tabular-nums">
-            {isOpenOnChain(pos) ? <UsdValue {...collateral} approx={false} maximumFractionDigits={0} /> : '—'}
-          </p>
-        </div>
-        <div>
-          <p className="text-[var(--muted)] text-xs">Debt</p>
-          <p className="tabular-nums">{debtRaw === undefined ? '—' : fmt(Number(formatUnits(debtRaw, decimals)))}</p>
-        </div>
-        <div>
-          {/* The price of the loan, on the screen where the amount is chosen rather than on the
-              portfolio page after it has been signed. It moves with the pool's utilization, so a
-              borrow by someone else changes what this one costs. */}
-          <p className="text-[var(--muted)] text-xs">Borrow APR</p>
-          <p className="tabular-nums">
-            {market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
-          </p>
-        </div>
-        <div>
-          <p className="text-[var(--muted)] text-xs">Available</p>
-          <p className="tabular-nums">{available === undefined ? '—' : fmt(Number(formatUnits(available, decimals)))}</p>
-        </div>
-      </div>
+      <PositionStats summary={summary} symbol={symbol} decimals={decimals} />
 
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs text-[var(--muted)]">
@@ -851,13 +716,7 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
             onConfirmed={() => {
               setAmount('');
               setAckRisk(false);
-              refetchDebt();
-              refetchHealth();
-              refetchMax();
-              refetchPos();
-              // The borrow just took cash out of the pool and moved its utilization, so the bound
-              // on the next one and the rate it would pay are both stale until this lands.
-              market?.refetch();
+              summary.refetch();
               onDone();
             }}
           />
