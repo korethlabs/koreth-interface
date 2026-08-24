@@ -9,7 +9,7 @@ import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hook
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
-import {usePoolMarket} from '@/hooks/useLendingPool';
+import {formatAprBps, usePoolMarket} from '@/hooks/useLendingPool';
 import {BORROW_HEADROOM_BPS, usePositionSummary} from '@/hooks/usePositionSummary';
 import {HealthReadout, PositionStats} from '@/components/PositionStats';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
@@ -254,7 +254,7 @@ function PoolOption({
         <span>
           <span className="block text-[var(--muted)]">Borrow APR</span>
           <span className="tabular-nums text-sm">
-            {market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
+            {formatAprBps(market?.borrowAprBps)}
           </span>
         </span>
         <span>

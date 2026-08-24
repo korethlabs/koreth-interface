@@ -4,6 +4,7 @@ import {
   NO_DEBT_HEALTH_FACTOR,
   liquidationDropBps,
 } from '@/hooks/useCollateralConfig';
+import {formatAprBps} from '@/hooks/useLendingPool';
 import {isOpenOnChain} from '@/hooks/useOnChainPosition';
 import {type PositionSummary} from '@/hooks/usePositionSummary';
 import {UsdValue} from '@/components/UsdValue';
@@ -145,7 +146,7 @@ export function PositionStats({
           else changes what this one costs. */}
       <Cell
         label="Borrow APR"
-        value={market === undefined ? '—' : `${(Number(market.borrowAprBps) / 100).toFixed(2)}%`}
+        value={formatAprBps(market?.borrowAprBps)}
       />
       <Cell
         label="Available"
