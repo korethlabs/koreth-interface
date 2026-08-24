@@ -9,6 +9,43 @@ import {LIVE_REFETCH_MS} from '@/lib/chain';
 const BPS = 10_000n;
 
 /**
+ * 365.25 days, matching `SECONDS_PER_YEAR` in InterestRateModel.
+ *
+ * The model derives its per-second rates by dividing an annual figure by this, so annualizing with
+ * any other year length gives back a number the protocol never quoted. It has to be this one.
+ */
+const SECONDS_PER_YEAR = 31_557_600n;
+
+/**
+ * A per-second rate at 1e18, annualized to bps.
+ *
+ * This is `InterestRateModel.getBorrowRateAPR` restated in TypeScript, and deliberately so: the
+ * model exposes an APR helper for the borrow side and none for the supply side, so a supply rate
+ * has to be annualized off-chain. Doing it with the contract's own arithmetic — same year, same
+ * scale, same truncation — is what lets the two APRs sit in one row and be compared, rather than
+ * being two numbers that merely both end in a percent sign.
+ *
+ * Interest accrues linearly here (`_accrue` multiplies the rate by elapsed seconds), so a linear
+ * annualization is the rate the protocol will actually charge, not an approximation of a compounded
+ * one. That is why these are APRs and are not labelled APY.
+ */
+export function aprBpsFromRatePerSecond(ratePerSecond: bigint): bigint {
+  return (ratePerSecond * SECONDS_PER_YEAR * BPS) / 10n ** 18n;
+}
+
+/**
+ * An APR in bps, as a percentage string.
+ *
+ * Shared so that every rate in the app is rendered to the same precision from the same unit. Both
+ * pages that show a supply rate were formatting a per-second 1e18 figure inline, each with its own
+ * copy of the year length.
+ */
+export function formatAprBps(aprBps: bigint | undefined): string {
+  if (aprBps === undefined) return '—';
+  return `${(Number(aprBps) / 100).toFixed(2)}%`;
+}
+
+/**
  * Share of the pool's idle cash the interface offers to withdraw, in bps.
  *
  * withdraw() accrues interest before it divides, so the payout it computes is larger than the one
@@ -73,19 +110,39 @@ export function useProtocolPaused(): boolean | undefined {
 }
 
 /**
- * What one pool charges to borrow from it, and what it can actually lend right now.
+ * One pool as every page describes it: its size, its two rates, and the cash it can actually pay
+ * out right now.
  *
- * Both figures bound a borrow rather than decorate it. `transferOut` requires the amount to be at
- * most the borrow asset sitting in the pool and reverts INSUFFICIENT_LIQUIDITY otherwise, so a
- * position with capacity to spare still cannot draw against cash borrowers have already taken. The
- * rate is the price of the debt the borrower is about to take on, which is the one figure a lending
- * interface cannot reasonably omit from the screen where the amount is chosen.
+ * The rate and the cash bound a borrow rather than decorate it. `transferOut` requires the amount
+ * to be at most the borrow asset sitting in the pool and reverts INSUFFICIENT_LIQUIDITY otherwise,
+ * so a position with capacity to spare still cannot draw against cash borrowers have already taken.
+ * The rate is the price of the debt the borrower is about to take on, which is the one figure a
+ * lending interface cannot reasonably omit from the screen where the amount is chosen.
+ *
+ * The totals and the supply rate were added when `/markets` — the page that exists to state these
+ * for every pool at once — turned out to be deriving them itself, without polling and without
+ * nullifying failed reads, and so to be quoting a different APR for the same pool than the two
+ * pages that act on it.
  */
 export type PoolMarket = {
   /** Annualized borrow rate in bps, as the rate model reports it at the pool's utilization. */
   borrowAprBps: bigint;
+  /** Annualized supply rate in bps: the borrow rate less the protocol's cut, scaled by utilization. */
+  supplyAprBps: bigint;
   /** Borrow asset held by the pool: the ceiling on any single borrow, whatever the LTV allows. */
   liquidity: bigint;
+  /** Everything lenders have in the pool, in the borrow asset. Excludes the protocol's reserves. */
+  totalSupply: bigint;
+  /** Everything borrowers have taken out of it, in the borrow asset. */
+  totalBorrow: bigint;
+  /**
+   * The protocol's accumulated cut, held apart from lender deposits.
+   *
+   * Carried because it is the denominator's missing term: the pool computes utilization as
+   * `totalBorrow / (totalSupply + protocolReserves)`, so a reader dividing the two totals shown
+   * beside it does not get the figure shown. Small in practice and wrong to leave implicit.
+   */
+  reserves: bigint;
   /** Pool utilization in bps, as the pool last recorded it. */
   utilization: bigint;
   /**
@@ -105,6 +162,8 @@ export function usePoolMarket(
       {address: pool, abi: lendingPoolAbi, functionName: 'getPoolState'},
       {address: pool, abi: lendingPoolAbi, functionName: 'interestRateModel'},
       {address: borrowAsset, abi: erc20Abi, functionName: 'balanceOf', args: [pool]},
+      {address: pool, abi: lendingPoolAbi, functionName: 'reserveFactorBps'},
+      {address: pool, abi: lendingPoolAbi, functionName: 'protocolReserves'},
     ],
     // Every borrow and repayment moves both the cash on hand and the rate derived from utilization,
     // so neither is pinned to the moment the page mounted.
@@ -114,25 +173,49 @@ export function usePoolMarket(
   const state = isError ? undefined : data?.[0].result;
   const irm = isError ? undefined : data?.[1].result;
   const liquidity = isError ? undefined : data?.[2].result;
+  const reserveFactor = isError ? undefined : data?.[3].result;
+  const reserves = isError ? undefined : data?.[4].result;
 
   // The rate model is addressed by the pool rather than configured here, so it takes a second round
-  // trip: its address is itself one of the reads above.
-  const {data: apr, isError: aprError} = useReadContract({
-    address: irm,
-    abi: interestRateModelAbi,
-    functionName: 'getBorrowRateAPR',
-    args: state === undefined ? undefined : [state.utilization],
-    query: {enabled: irm !== undefined && state !== undefined, refetchInterval: LIVE_REFETCH_MS},
+  // trip: its address is itself one of the reads above. Both rates are asked at once, so they
+  // cannot describe two different utilizations.
+  const {data: rates, isError: ratesError} = useReadContracts({
+    contracts: [
+      {
+        address: irm,
+        abi: interestRateModelAbi,
+        functionName: 'getBorrowRateAPR',
+        args: state === undefined ? undefined : [state.utilization],
+      },
+      {
+        address: irm,
+        abi: interestRateModelAbi,
+        functionName: 'getSupplyRate',
+        args: state === undefined || reserveFactor === undefined ? undefined : [state.utilization, reserveFactor],
+      },
+    ],
+    query: {
+      enabled: irm !== undefined && state !== undefined && reserveFactor !== undefined,
+      refetchInterval: LIVE_REFETCH_MS,
+    },
   });
 
-  if (state === undefined || liquidity === undefined) return undefined;
+  if (state === undefined || liquidity === undefined || reserves === undefined) return undefined;
   // A rate that failed to read is not a free loan, and a liquidity figure without one describes
   // half a decision — so the whole market reads as unknown until both have landed.
-  if (aprError || apr === undefined) return undefined;
+  const borrowAprBps = ratesError ? undefined : rates?.[0].result;
+  const supplyRatePerSecond = ratesError ? undefined : rates?.[1].result;
+  if (borrowAprBps === undefined || supplyRatePerSecond === undefined) return undefined;
 
   return {
-    borrowAprBps: apr as bigint,
+    borrowAprBps,
+    // Annualized here because the model publishes an APR helper for the borrow side only. Same
+    // arithmetic as that helper, so the pair is comparable.
+    supplyAprBps: aprBpsFromRatePerSecond(supplyRatePerSecond),
     liquidity,
+    totalSupply: state.totalSupply,
+    totalBorrow: state.totalBorrow,
+    reserves,
     utilization: state.utilization,
     // Only the pool read. The rate query is keyed on the utilization that read returns, so it
     // re-runs on its own once a new one lands; refetching it here would re-ask the rate model

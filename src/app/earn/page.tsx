@@ -5,14 +5,17 @@ import {useAccount, useReadContract} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {lendingPoolAbi, interestRateModelAbi} from '@/generated/abis';
 import {useSubgraphPools} from '@/hooks/useSubgraph';
-import {usePoolLenderState, useProtocolPaused} from '@/hooks/useLendingPool';
+import {
+  aprBpsFromRatePerSecond,
+  formatAprBps,
+  usePoolLenderState,
+  useProtocolPaused,
+} from '@/hooks/useLendingPool';
 import type {SubgraphPool} from '@/lib/subgraph';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {ActionButton} from '@/components/ActionButton';
 import {PoolWithdraw} from '@/components/PoolWithdraw';
 import {TokenChip} from '@/components/TokenChip';
-
-const SECONDS_PER_YEAR = 31_557_600n;
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -85,19 +88,22 @@ function PoolSupplyCard({
   const lender = usePoolLenderState(poolAddr, asset, owner);
 
   const irmAddr = irm as `0x${string}` | undefined;
-  const {data: supplyRatePerSec} = useReadContract({
+  const {data: supplyRatePerSec, isError: supplyRateError} = useReadContract({
     address: irmAddr,
     abi: interestRateModelAbi,
     functionName: 'getSupplyRate',
-    args: lender === undefined ? undefined : [lender.utilization, (reserve as bigint) ?? 0n],
+    args: lender === undefined || reserve === undefined ? undefined : [lender.utilization, reserve as bigint],
     // Follows the utilization it is derived from rather than settling at mount: the rate moves with
     // every borrow and repayment, and an APR pinned to page load is an APR for a different pool.
     query: {enabled: !!irmAddr && lender !== undefined && reserve !== undefined, refetchInterval: LIVE_REFETCH_MS},
   });
+  // Annualized and formatted through the same pair of functions `/markets` uses, so the rate quoted
+  // where a lender supplies and the rate quoted where they compare pools cannot differ. Each page
+  // previously carried its own copy of the year length and its own formatting.
   const apr =
-    supplyRatePerSec === undefined
+    supplyRateError || supplyRatePerSec === undefined
       ? '—'
-      : `${(Number(formatUnits((supplyRatePerSec as bigint) * SECONDS_PER_YEAR, 18)) * 100).toFixed(2)}%`;
+      : formatAprBps(aprBpsFromRatePerSecond(supplyRatePerSec as bigint));
 
   // Unknown is not zero: coalescing the wallet balance would put "0.00 · Max" on screen while the
   // read is in flight, telling a funded user they have nothing to supply.
