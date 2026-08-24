@@ -82,7 +82,6 @@ function PoolSupplyCard({
   const {decimals, symbol} = pool;
 
   const {data: walletBal, isError: walletBalError, refetch: refetchBal} = useReadContract({address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, refetch: refetchAllow} = useReadContract({address: asset, abi: erc20Abi, functionName: 'allowance', args: [owner, poolAddr]});
   const {data: irm} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'interestRateModel'});
   const {data: reserve} = useReadContract({address: poolAddr, abi: lendingPoolAbi, functionName: 'reserveFactorBps'});
   const lender = usePoolLenderState(poolAddr, asset, owner);
@@ -124,7 +123,6 @@ function PoolSupplyCard({
 
   const onDone = () => {
     refetchBal();
-    refetchAllow();
     lender?.refetch();
   };
 
@@ -195,7 +193,7 @@ function PoolSupplyCard({
             className="input flex-1 p-2.5"
           />
           <ActionButton
-            approve={{token: asset, spender: poolAddr, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+            approve={{token: asset, spender: poolAddr, amount: parsed}}
             address={poolAddr}
             abi={lendingPoolAbi}
             functionName="supply"

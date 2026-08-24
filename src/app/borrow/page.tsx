@@ -412,17 +412,14 @@ function V2DepositCard({
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
-  // One value, read once and used both to count the prompts and to decide whether to send an
-  // approval, so the sentence above the button and the behaviour of the button are the same
-  // decision rather than two that happen to agree. Computing them from the read separately leaves
-  // the promise true only for as long as nobody edits one of the two expressions.
+  // Used only to tell the user how many wallet prompts to expect. The button re-reads the allowance
+  // at the moment it is clicked and decides for itself, so this figure describes the deposit rather
+  // than governing it: a stale one costs the user a surprise, not a reverted transaction.
   //
   // An allowance that could not be read counts as zero rather than as whatever TanStack Query still
   // has cached, which for an errored refetch is the previous block's answer. Zero over-promises a
   // prompt instead of under-promising one — a confirmation that does not appear is a pleasant
-  // surprise, one that does is a broken instruction — and it is the direction that fails closed:
-  // an approval sent against an allowance that turns out to be sufficient is redundant, one skipped
-  // against an allowance that turns out not to be reverts the deposit.
+  // surprise, one that does is a broken instruction.
   const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
   const confirmations = allowanceValue < (balance ?? 0n) ? 2 : 1;
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
@@ -538,7 +535,7 @@ function V2DepositCard({
             the alternative is sending a deposit() the protocol may reject and charging the user gas
             to find out. */}
         <ActionButton
-          approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n, allowance: allowanceValue}}
+          approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n}}
           address={deployments.positionManager}
           abi={positionManagerAbi}
           functionName="deposit"

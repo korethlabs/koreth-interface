@@ -1,8 +1,8 @@
 'use client';
 
 import {useState} from 'react';
-import {useAccount, useReadContract} from 'wagmi';
-import {erc20Abi, formatUnits, parseUnits} from 'viem';
+import {useAccount} from 'wagmi';
+import {formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useSubgraphPositions, useSupplyPositions} from '@/hooks/useSubgraph';
@@ -67,7 +67,7 @@ export default function PortfolioPage() {
             ) : (
               <div className="grid md:grid-cols-2 gap-4">
                 {borrows.map((p) => (
-                  <PositionCard key={p.id} position={p} owner={address!} onDone={() => refetchPositions()} />
+                  <PositionCard key={p.id} position={p} onDone={() => refetchPositions()} />
                 ))}
               </div>
             )}
@@ -133,11 +133,9 @@ function SupplyCard({
 
 function PositionCard({
   position,
-  owner,
   onDone,
 }: {
   position: SubgraphPosition;
-  owner: `0x${string}`;
   onDone: () => void;
 }) {
   const [repayAmt, setRepayAmt] = useState('');
@@ -151,13 +149,6 @@ function PositionCard({
   const summary = usePositionSummary(id, position.pool.address as `0x${string}`, asset);
   const {debt: debtRaw, position: onChain} = summary;
 
-  const {data: allowance, refetch: refetchAllow} = useReadContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: 'allowance',
-    args: [owner, deployments.lendingEngine],
-  });
-
   // Decided on the read itself, not on `debtBn`, whose zero also stands for a debt that has not
   // landed: this is what makes the card offer a withdraw instead of a repay, and withdraw() reverts
   // on any outstanding debt. The coalesced figure only sizes the repay input, which a zero bounds
@@ -168,7 +159,6 @@ function PositionCard({
 
   const refetchAll = () => {
     summary.refetch();
-    refetchAllow();
     onDone();
   };
 
@@ -217,7 +207,7 @@ function PositionCard({
               Max
             </button>
             <ActionButton
-              approve={{token: asset, spender: deployments.lendingEngine, amount: parsed, allowance: (allowance as bigint) ?? 0n}}
+              approve={{token: asset, spender: deployments.lendingEngine, amount: parsed}}
               address={deployments.lendingEngine}
               abi={lendingEngineAbi}
               functionName="repay"
