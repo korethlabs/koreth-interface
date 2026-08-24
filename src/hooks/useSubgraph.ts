@@ -5,6 +5,7 @@ import {
   querySubgraph,
   type SubgraphProtocolStats,
   type SubgraphPool,
+  type SubgraphCollateralPool,
   type SubgraphCollateralType,
   type SubgraphPosition,
   type SubgraphSupplyPosition,
@@ -59,6 +60,28 @@ export function useSubgraphPools() {
         `{ pools(orderBy: symbol, subgraphError: allow) { id address borrowAsset symbol decimals totalSupply } }`,
       );
       return data.pools;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Which AMM pools the protocol accepts as collateral backing.
+ *
+ * `supportedLpPools` is a mapping and no contract call can list it, so this query is the only way
+ * to know the set at all — which is why the interface used to keep a hardcoded copy of it. Removed
+ * pools stay in the index with `whitelisted: false`, so the filter is not cosmetic.
+ */
+export function useCollateralPools() {
+  return useQuery({
+    queryKey: ['sg', 'collateralPools'],
+    queryFn: async () => {
+      const data = await querySubgraph<{ collateralPools: SubgraphCollateralPool[] }>(
+        `{ collateralPools(where: { whitelisted: true }, orderBy: whitelistedAt, subgraphError: allow) {
+            id address
+        } }`,
+      );
+      return data.collateralPools;
     },
     refetchInterval: 30_000,
   });

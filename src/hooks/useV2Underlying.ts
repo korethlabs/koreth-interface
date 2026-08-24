@@ -30,7 +30,7 @@ export type V2Underlying = {
  * Returns undefined rather than zeroes when a read is missing: zero amounts would describe an empty
  * position, which is a different claim from not knowing yet.
  */
-export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underlying | undefined {
+export function useV2Underlying(pair: `0x${string}` | undefined, balance: bigint): V2Underlying | undefined {
   const {data, isError} = useReadContracts({
     contracts: [
       {address: pair, abi: v2PairAbi, functionName: 'getReserves'},
@@ -40,7 +40,7 @@ export function useV2Underlying(pair: `0x${string}`, balance: bigint): V2Underly
     ],
     // Reserves move with every trade against the pair, so the composition is polled alongside the
     // USD value it sits under rather than being pinned to the moment the page mounted.
-    query: {enabled: balance > 0n, refetchInterval: LIVE_REFETCH_MS},
+    query: {enabled: !!pair && balance > 0n, refetchInterval: LIVE_REFETCH_MS},
   });
 
   // `enabled: false` stops the query, it does not evict what it already fetched, and none of the

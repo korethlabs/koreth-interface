@@ -4,22 +4,29 @@ import {useEffect, useId, useMemo, useState} from 'react';
 import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
-import {positionManagerAbi, lendingEngineAbi, lpOracleHubAbi} from '@/generated/abis';
+import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
 import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
+import {
+  useAcceptedCollateral,
+  isAcceptedV3Position,
+  pairLabel,
+  type AcceptedPool,
+} from '@/hooks/useAcceptedCollateral';
+import {useLpUsdValues, type LpPriceQuery} from '@/hooks/useLpUsdValue';
+import {useOwnedV3Positions} from '@/hooks/useOwnedV3Positions';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {formatAprBps, usePoolMarket} from '@/hooks/useLendingPool';
 import {BORROW_HEADROOM_BPS, usePositionSummary} from '@/hooks/usePositionSummary';
 import {HealthReadout, PositionStats} from '@/components/PositionStats';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
-import {LIVE_REFETCH_MS} from '@/lib/chain';
 import {TxButton} from '@/components/TxButton';
 import {ActionButton} from '@/components/ActionButton';
 import {TokenChip} from '@/components/TokenChip';
 import {UsdValue} from '@/components/UsdValue';
 import {tokenInfo} from '@/lib/tokens';
-import {V3_NFT_MANAGER, V3_FEE, isFullRange, nftManagerAbi} from '@/lib/v3';
+import {V3_NFT_MANAGER, isFullRange, nftManagerAbi} from '@/lib/v3';
 
 const LP_COLOR = '#8b93ff';
 
@@ -28,53 +35,6 @@ const LP_COLOR = '#8b93ff';
  * this page already paints as a warning, so the colour and the checkbox agree on what is risky.
  */
 const RISK_ACK_HEALTH_FACTOR = 15n * 10n ** 17n;
-
-// Quote tokens whose WETH V3 pool is whitelisted as collateral on-chain. Only pairs listed here are
-// shown as depositable: deposit() reverts COLLATERAL_NOT_ENABLED for a pool ProtocolCore hasn't
-// whitelisted, so this list must track the on-chain whitelist. To add WETH/DAI or WETH/USDT, first
-// whitelist their pools in ProtocolCore AND register their USD feeds in PriceFeedRegistry, then add
-// the token address here (e.g. deployments.dai, deployments.usdt).
-const V3_ELIGIBLE_QUOTES: string[] = [deployments.usdc.toLowerCase()];
-
-// A V3 NFT is depositable when it is a WETH/<eligible-quote> pool at the whitelisted fee tier.
-// Uniswap orders token0 < token1 by address, so WETH can be on either side.
-function isEligibleV3Pair(token0: string, token1: string, fee: number): boolean {
-  if (fee !== V3_FEE) return false;
-  const weth = deployments.weth.toLowerCase();
-  const a = token0.toLowerCase();
-  const b = token1.toLowerCase();
-  if (a !== weth && b !== weth) return false;
-  return V3_ELIGIBLE_QUOTES.includes(a === weth ? b : a);
-}
-
-// The hub is read off PositionManager rather than from deployments.json so the price shown is by
-// construction the one the protocol will use: PositionManager.getPositionValue asks this same hub,
-// and getHealthFactor is computed from that. A hub address configured separately in the frontend
-// could drift from the one the contracts actually consult.
-function useOracleHub(): `0x${string}` | undefined {
-  const {data} = useReadContract({address: deployments.positionManager, abi: positionManagerAbi, functionName: 'oracleHub'});
-  return data as `0x${string}` | undefined;
-}
-
-// getRawPrice takes the amount as an argument instead of reading a stored position, which is what
-// lets it value collateral that is still in the wallet — PositionManager.getPositionValue only
-// works once a position exists. tokenId is ignored for V2, amount is ignored for V3.
-function useLpUsdValue(lpToken: `0x${string}` | undefined, tokenId: bigint, amount: bigint, lpType: number) {
-  const hub = useOracleHub();
-  const {data, isError} = useReadContract({
-    address: hub,
-    abi: lpOracleHubAbi,
-    functionName: 'getRawPrice',
-    args: lpToken ? [lpToken, tokenId, amount, lpType] : undefined,
-    query: {
-      enabled: !!hub && !!lpToken && (lpType === LP_TYPE_V3 || amount > 0n),
-      refetchInterval: LIVE_REFETCH_MS,
-    },
-  });
-  // A failed refetch leaves the last successful price in the cache, and a price the oracle has
-  // since stopped answering for is exactly the one that must not be shown as current.
-  return {value: isError ? undefined : (data as bigint | undefined), isError};
-}
 
 function parseAmount(v: string, decimals: number): bigint {
   try {
@@ -89,12 +49,15 @@ function fmt(n: number, max = 2): string {
 }
 
 /**
- * A token amount with its symbol, e.g. "5 WETH". The precision follows the size rather than the
- * token's decimals: two places would round a fraction of an ETH to "0.00", and four would pad a
- * five-figure USDC amount with digits that carry nothing.
+ * A token amount with its symbol, e.g. "5 WETH", or undefined for a token whose decimals are
+ * unknown — an amount that cannot be scaled is not one to print at an arbitrary scale.
+ *
+ * The precision follows the size rather than the token's decimals: two places would round a fraction
+ * of an ETH to "0.00", and four would pad a five-figure USDC amount with digits that carry nothing.
  */
-function formatTokenAmount(raw: bigint, token: string): string {
+function formatTokenAmount(raw: bigint, token: string): string | undefined {
   const {symbol, decimals} = tokenInfo(token);
+  if (decimals === undefined) return undefined;
   const n = Number(formatUnits(raw, decimals));
   return `${fmt(n, n >= 1_000 ? 2 : 4)} ${symbol}`;
 }
@@ -115,6 +78,11 @@ export default function BorrowPage() {
   const {data: collateralTypes, isLoading: loadingCollateral} = useCollateralTypes();
   const enabled = useMemo(() => new Set((collateralTypes ?? []).map((c) => c.id)), [collateralTypes]);
 
+  // Which pools the protocol accepts. This used to be a constant in this file, kept in step with the
+  // chain by hand; it is now enumerated from the whitelist events and confirmed pool by pool against
+  // ProtocolCore, so the menu below is the protocol's own answer rather than a copy of it.
+  const {data: accepted, isLoading: loadingAccepted, isError: acceptedError} = useAcceptedCollateral();
+
   return (
     <main className="max-w-5xl mx-auto px-6 py-16">
       <div className="mb-10">
@@ -133,9 +101,18 @@ export default function BorrowPage() {
             {/* `enabled` is empty both while the query is in flight and when the protocol really
                 accepts nothing, so the loading branch comes first — otherwise every page load
                 flashes the empty state before the cards appear. */}
-            {loadingCollateral ? (
+            {loadingCollateral || loadingAccepted ? (
               <div className="card p-10 text-center text-[var(--muted)]">Loading…</div>
-            ) : enabled.size === 0 ? (
+            ) : acceptedError || accepted === undefined ? (
+              /* Deliberately not a fallback to a hardcoded pair. Which pools are accepted is
+                 protocol state, and standing in for it with a guess offers a deposit nobody has
+                 confirmed the protocol will take. Positions and balances are read from the chain
+                 and keep working while this says nothing. */
+              <div className="card p-10 text-center text-[var(--muted)]">
+                The collateral the protocol accepts could not be listed. Deposits are unavailable
+                until it can be read.
+              </div>
+            ) : enabled.size === 0 || (accepted.v2.length === 0 && accepted.v3.length === 0) ? (
               <div className="card p-10 text-center text-[var(--muted)]">
                 No collateral types are currently accepted.
               </div>
@@ -152,11 +129,11 @@ export default function BorrowPage() {
                     siblings and each is mounted only while the RiskManager still accepts its type:
                     on the address alone they would share a key, and suspending one type would hand
                     its state to the other rather than unmounting it. */}
-                {enabled.has('UniswapV2') && (
-                  <DepositV2Card key={`v2:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                {enabled.has('UniswapV2') && accepted.v2.length > 0 && (
+                  <V2DepositCard key={`v2:${address}`} owner={address!} pools={poolList} accepted={accepted.v2} onDone={() => refetchPositions()} />
                 )}
-                {enabled.has('UniswapV3') && (
-                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                {enabled.has('UniswapV3') && accepted.v3.length > 0 && (
+                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} accepted={accepted.v3} onDone={() => refetchPositions()} />
                 )}
               </div>
             )}
@@ -308,24 +285,125 @@ function BorrowAssetSelect({
   );
 }
 
-function DepositV2Card({
+const symbolOf = (address: string) => tokenInfo(address).symbol;
+
+/**
+ * Picks which of the accepted pairs the deposit will lock.
+ *
+ * Same reset discipline as useBorrowAssetChoice, for the same reason: the accepted set is read from
+ * the chain and can come back different, and a selection that is no longer in it would leave the
+ * tab strip with nothing highlighted while the deposit button still pointed at the old pair — a
+ * deposit that reverts LP_POOL_NOT_SUPPORTED once the protocol has dropped it.
+ */
+function useAcceptedPairChoice(accepted: AcceptedPool[]) {
+  const [pair, setPair] = useState<`0x${string}` | ''>('');
+  useEffect(() => {
+    if (!accepted.length) {
+      setPair('');
+      return;
+    }
+    if (!accepted.some((p) => p.address === pair)) {
+      setPair(accepted[0].address);
+    }
+  }, [accepted, pair]);
+  return {pair, setPair};
+}
+
+function V2DepositCard({
   owner,
   pools,
+  accepted,
   onDone,
 }: {
   owner: `0x${string}`;
   pools: SubgraphPool[];
+  accepted: AcceptedPool[];
   onDone: () => void;
 }) {
   const [deposited, setDeposited] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
+  const {pair, setPair} = useAcceptedPairChoice(accepted);
+  const pairGroup = useId();
 
-  const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, isError: allowanceError, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
+  // Every accepted pair's balance, in one batch. The tabs state what the protocol accepts rather
+  // than only what the wallet happens to hold, so an unselected pair still needs its balance — that
+  // is what tells the user whether switching to it would give them anything.
+  const {data: balanceResults, isError: balancesError, refetch: refetchBalances} = useReadContracts({
+    contracts: accepted.map((p) => ({
+      address: p.address,
+      abi: erc20Abi,
+      functionName: 'balanceOf' as const,
+      args: [owner] as const,
+    })),
+    query: {enabled: accepted.length > 0},
+  });
 
-  const balance = (lpBalance as bigint) ?? 0n;
-  const underlying = useV2Underlying(deployments.v2Pair, balance);
-  const {value: lpUsd, isError: lpUsdError} = useLpUsdValue(deployments.v2Pair, 0n, balance, LP_TYPE_V2);
+  // Three states, not two. A balance that could not be read stays undefined rather than becoming
+  // zero — zero says the wallet holds none of this pair, which is a claim, and the wrong one to make
+  // on a failed read. But a balance that has not arrived yet is also undefined, and that one is not
+  // a failure: collapsing the two puts "price unavailable" under every tab for as long as the
+  // multicall is in flight, which is the same lie in the other direction.
+  const balances = useMemo(
+    () =>
+      accepted.map((_, i) => {
+        const r = balanceResults?.[i];
+        if (balancesError || r?.status === 'failure') return {value: undefined, isError: true};
+        return {value: r?.result as bigint | undefined, isError: false};
+      }),
+    [accepted, balanceResults, balancesError],
+  );
+
+  // Only pairs the wallet actually holds are sent to the oracle. A zero balance is worth zero by
+  // arithmetic, not by assumption, and asking for a price on a zero amount would spend a call to be
+  // told so.
+  const {pricedPairs, priceQueries} = useMemo(() => {
+    const pricedPairs: AcceptedPool[] = [];
+    const priceQueries: LpPriceQuery[] = [];
+    accepted.forEach((p, i) => {
+      const amount = balances[i].value;
+      if (amount === undefined || amount === 0n) return;
+      pricedPairs.push(p);
+      priceQueries.push({lpToken: p.address, tokenId: 0n, amount});
+    });
+    return {pricedPairs, priceQueries};
+  }, [accepted, balances]);
+
+  const prices = useLpUsdValues(LP_TYPE_V2, priceQueries);
+  const usdFor = useMemo(() => {
+    const byPair = new Map(pricedPairs.map((p, i) => [p.address, prices[i]]));
+    return (i: number) => {
+      const {value: bal, isError} = balances[i];
+      // The price is derived from the balance, so it inherits the balance's state: unreadable if
+      // the balance was unreadable, still loading if the balance is still loading.
+      if (isError) return {value: undefined, isError: true};
+      if (bal === undefined) return {value: undefined, isError: false};
+      if (bal === 0n) return {value: 0n, isError: false};
+      return byPair.get(accepted[i].address) ?? {value: undefined, isError: false};
+    };
+  }, [accepted, balances, pricedPairs, prices]);
+
+  const selectedIndex = accepted.findIndex((p) => p.address === pair);
+  const selected = selectedIndex >= 0 ? accepted[selectedIndex] : undefined;
+  const balance = selectedIndex >= 0 ? balances[selectedIndex].value : undefined;
+  const {value: lpUsd, isError: lpUsdError} = selectedIndex >= 0 ? usdFor(selectedIndex) : {value: undefined, isError: false};
+
+  const {data: allowance, isError: allowanceError, refetch: refetchAllowance} = useReadContract({
+    address: selected?.address,
+    abi: erc20Abi,
+    functionName: 'allowance',
+    args: selected ? [owner, deployments.v2Adapter] : undefined,
+    query: {enabled: !!selected},
+  });
+
+  const underlying = useV2Underlying(selected?.address, balance ?? 0n);
+  // Both legs or neither: half a composition is not a composition, and the missing half is exactly
+  // the token whose amount could not be trusted.
+  const composition = useMemo(() => {
+    if (!underlying) return undefined;
+    const amount0 = formatTokenAmount(underlying.amount0, underlying.token0);
+    const amount1 = formatTokenAmount(underlying.amount1, underlying.token1);
+    return {amounts: amount0 && amount1 ? `${amount0} + ${amount1}` : undefined};
+  }, [underlying]);
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
@@ -341,8 +419,9 @@ function DepositV2Card({
   // an approval sent against an allowance that turns out to be sufficient is redundant, one skipped
   // against an allowance that turns out not to be reverts the deposit.
   const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
-  const confirmations = allowanceValue < balance ? 2 : 1;
+  const confirmations = allowanceValue < (balance ?? 0n) ? 2 : 1;
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
+  const selectedLabel = selected ? pairLabel(selected, symbolOf) : undefined;
 
   return (
     <div className="card p-5 space-y-4">
@@ -350,9 +429,50 @@ function DepositV2Card({
         <TokenChip label="V2" color={LP_COLOR} />
         <div>
           <p className="font-semibold leading-tight">Uniswap V2 LP</p>
-          <p className="text-xs text-[var(--muted)]">WETH/USDC · fungible</p>
+          <p className="text-xs text-[var(--muted)]">Fungible · pick a pair below</p>
         </div>
       </div>
+
+      {/* Every accepted pair gets a tab, held or not. The section then says what the protocol takes
+          rather than what this wallet happens to have, which is the difference between "Koreth does
+          not accept WETH/USDT" and "you have no WETH/USDT to deposit" — and the balance is read
+          anyway to decide, so stating it costs nothing. */}
+      <fieldset>
+        <legend className="block text-xs text-[var(--muted)] mb-1">Collateral pair</legend>
+        <div className="flex flex-wrap gap-1.5">
+          {accepted.map((p, i) => {
+            const {value, isError} = usdFor(i);
+            const isSelected = p.address === pair;
+            return (
+              <label
+                key={p.address}
+                // The focusable element is the visually hidden radio, so the ring has to be drawn
+                // by the tab around it: without this, tabbing through the group moves an invisible
+                // cursor.
+                className={`rounded-lg border px-3 py-2 cursor-pointer transition-colors has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)] ${
+                  isSelected
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/5'
+                    : 'border-[var(--border)] hover:border-[var(--muted)]'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={pairGroup}
+                  checked={isSelected}
+                  onChange={() => setPair(p.address)}
+                  className="sr-only"
+                />
+                <span className="block text-sm font-medium leading-tight">{pairLabel(p, symbolOf)}</span>
+                <UsdValue
+                  value={value}
+                  isError={isError}
+                  className="block text-xs text-[var(--muted)] tabular-nums"
+                />
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
 
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
@@ -362,8 +482,16 @@ function DepositV2Card({
             the pair's total supply is the geometric mean of a 6- and an 18-decimal reserve, so the
             one number a user could check against what they deposited looked like dust. */}
         <div>
-          <p className="text-xs text-[var(--muted)]">Your LP balance</p>
+          <p className="text-xs text-[var(--muted)]">
+            Your {selectedLabel ?? 'LP'} balance
+          </p>
           <UsdValue value={lpUsd} isError={lpUsdError} className="text-2xl font-semibold tabular-nums" />
+          {/* Said in words rather than left as "$0.00". A zero under a tab the user just switched
+              to reads as a page still loading; naming the pair says the switch worked and there is
+              simply nothing there. */}
+          {balance === 0n && selectedLabel && (
+            <p className="text-xs text-[var(--muted)]">You hold no {selectedLabel} V2 LP.</p>
+          )}
           {/* Named rather than left as a bare pair of amounts. One of these two tickers is very
               often also the ticker of a pool in the selector above, and unlabelled the line reads as
               a statement about the loan: a user who picks DAI and then sees "11,532.69 USDC" under
@@ -371,12 +499,17 @@ function DepositV2Card({
               locking rather than something about the asset they just chose to borrow. Written with
               "+" for the same reason — "/" is how a pair is named, which is what the header above
               already does, and it invites the two amounts to be read as a ratio. */}
-          {underlying && (
-            <p className="text-xs text-[var(--muted)] tabular-nums">
-              Made up of {formatTokenAmount(underlying.amount0, underlying.token0)} +{' '}
-              {formatTokenAmount(underlying.amount1, underlying.token1)}
-            </p>
-          )}
+          {composition &&
+            (composition.amounts ? (
+              <p className="text-xs text-[var(--muted)] tabular-nums">Made up of {composition.amounts}</p>
+            ) : (
+              // Dropped rather than shown at a guessed scale. This line's whole job is to be
+              // checkable against what the user deposited, and a leg printed with the wrong
+              // decimals fails at that while looking exactly like one that succeeded.
+              <p className="text-xs text-[var(--muted)]">
+                What this LP is made of can&apos;t be shown: one of its tokens isn&apos;t recognised.
+              </p>
+            ))}
         </div>
 
         <BorrowingCapacity capacity={capacity} isError={lpUsdError} config={config} />
@@ -400,16 +533,18 @@ function DepositV2Card({
             the alternative is sending a deposit() the protocol may reject and charging the user gas
             to find out. */}
         <ActionButton
-          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: allowanceValue}}
+          approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n, allowance: allowanceValue}}
           address={deployments.positionManager}
           abi={positionManagerAbi}
           functionName="deposit"
-          args={[deployments.v2Pair, 0n, balance, borrowAsset]}
+          args={[selected?.address, 0n, balance ?? 0n, borrowAsset]}
           label="Deposit full balance"
-          disabled={balance === 0n || borrowAsset === '' || !config?.enabled}
+          // An unread balance disables the button as firmly as a zero one: the whole balance is the
+          // deposit amount, so not knowing it means having nothing to send.
+          disabled={!selected || balance === undefined || balance === 0n || borrowAsset === '' || !config?.enabled}
           onConfirmed={() => {
             setDeposited(true);
-            refetchBalance();
+            refetchBalances();
             refetchAllowance();
             onDone();
           }}
@@ -551,54 +686,34 @@ function DepositedNote({unlockBlocks}: {unlockBlocks: bigint | undefined}) {
   );
 }
 
-// viem decodes a multi-output function (positions() has 12 outputs) as a positional
-// tuple, not an object — so we index it rather than accessing named fields.
-type V3PositionResult = readonly [
-  bigint, // nonce
-  string, // operator
-  string, // token0
-  string, // token1
-  number, // fee
-  number, // tickLower
-  number, // tickUpper
-  bigint, // liquidity
-  ...unknown[],
-];
-
-function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: SubgraphPool[]; onDone: () => void}) {
+function V3DepositCard({
+  owner,
+  pools,
+  accepted,
+  onDone,
+}: {
+  owner: `0x${string}`;
+  pools: SubgraphPool[];
+  accepted: AcceptedPool[];
+  onDone: () => void;
+}) {
   const [deposited, setDeposited] = useState(false);
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
-  const {data: nftCount, refetch: refetchCount} = useReadContract({address: V3_NFT_MANAGER, abi: nftManagerAbi, functionName: 'balanceOf', args: [owner]});
-  const n = Number((nftCount as bigint) ?? 0n);
+  const {
+    positions: owned,
+    isLoading: ownedLoading,
+    isError: ownedError,
+    refetch: refetchCount,
+  } = useOwnedV3Positions(owner);
 
-  const {data: idResults} = useReadContracts({
-    contracts: Array.from({length: n}, (_, i) => ({
-      address: V3_NFT_MANAGER,
-      abi: nftManagerAbi,
-      functionName: 'tokenOfOwnerByIndex' as const,
-      args: [owner, BigInt(i)] as const,
-    })),
-    query: {enabled: n > 0},
-  });
-  const tokenIds = (idResults ?? []).map((r) => r.result as bigint).filter((x) => x !== undefined);
-
-  const {data: posResults} = useReadContracts({
-    contracts: tokenIds.map((id) => ({
-      address: V3_NFT_MANAGER,
-      abi: nftManagerAbi,
-      functionName: 'positions' as const,
-      args: [id] as const,
-    })),
-    query: {enabled: tokenIds.length > 0},
-  });
-  const eligible = tokenIds
-    .map((id, i) => ({id, p: posResults?.[i]?.result as V3PositionResult | undefined}))
-    .filter((e): e is {id: bigint; p: V3PositionResult} => {
-      if (!e.p) return false;
-      const [, , token0, token1, fee, , , liquidity] = e.p;
-      return isEligibleV3Pair(token0, token1, Number(fee)) && liquidity > 0n;
-    })
-    .map(({id, p}) => ({id, token0: p[2], token1: p[3], fee: Number(p[4]), tickLower: p[5], tickUpper: p[6]}));
+  // Kept rather than filtered away, because the two are different sentences: an NFT in a pool the
+  // protocol does not take is not a wallet with nothing in it, and saying so is what stops a user
+  // hunting for a position that is on screen in Uniswap and missing here.
+  const eligible = useMemo(
+    () => owned.filter((p) => isAcceptedV3Position(accepted, p.token0, p.token1, p.fee)),
+    [owned, accepted],
+  );
+  const ineligibleCount = owned.length - eligible.length;
 
   const {data: approvedAll, refetch: refetchApproval} = useReadContract({
     address: V3_NFT_MANAGER,
@@ -607,21 +722,12 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
     args: [owner, deployments.v3Adapter],
   });
 
-  // Batched rather than one useLpUsdValue per row: the rows are rendered from a single list, and a
-  // hook per row would both multiply the RPC round-trips and make the count vary between renders.
   // The V3 oracle keys off the NFT manager address and tokenId, so amount is passed as 0.
-  const hub = useOracleHub();
-  const {data: valueResults, isError: valuesError} = useReadContracts({
-    contracts: hub
-      ? eligible.map(({id}) => ({
-          address: hub,
-          abi: lpOracleHubAbi,
-          functionName: 'getRawPrice' as const,
-          args: [V3_NFT_MANAGER, id, 0n, LP_TYPE_V3] as const,
-        }))
-      : [],
-    query: {enabled: !!hub && eligible.length > 0, refetchInterval: LIVE_REFETCH_MS},
-  });
+  const priceQueries = useMemo<LpPriceQuery[]>(
+    () => eligible.map(({id}) => ({lpToken: V3_NFT_MANAGER, tokenId: id, amount: 0n})),
+    [eligible],
+  );
+  const prices = useLpUsdValues(LP_TYPE_V3, priceQueries);
   // One config for every row: the risk parameters are per LP type, not per NFT.
   const config = useCollateralConfig(LP_TYPE_V3);
   const unlockBlocks = useBorrowUnlockDelay();
@@ -633,14 +739,27 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
         <TokenChip label="V3" color={LP_COLOR} />
         <div>
           <p className="font-semibold leading-tight">Uniswap V3 position</p>
-          <p className="text-xs text-[var(--muted)]">WETH/USDC · NFT</p>
+          {/* The accepted pairs are named here rather than under each row: a wallet holding none of
+              them would otherwise be told only that it has nothing eligible, without ever being
+              told what eligible means. */}
+          <p className="text-xs text-[var(--muted)]">
+            NFT · {accepted.map((p) => pairLabel(p, symbolOf)).join(', ')}
+          </p>
         </div>
       </div>
 
       <BorrowAssetSelect pools={pools} value={borrowAsset} onChange={setBorrowAsset} />
 
       {eligible.length === 0 ? (
-        <p className="text-sm text-[var(--muted)]">No eligible V3 positions — get one from the Faucet.</p>
+        <p className="text-sm text-[var(--muted)]">
+          {ownedLoading
+            ? 'Loading your V3 positions…'
+            : ownedError
+              ? 'Your V3 positions could not be read.'
+              : ineligibleCount > 0
+                ? `None of your ${ineligibleCount} V3 position${ineligibleCount === 1 ? ' is' : 's are'} in a pool the protocol accepts.`
+                : 'No eligible V3 positions — get one from the Faucet.'}
+        </p>
       ) : (
         <div className="space-y-3">
           {config && !config.enabled && (
@@ -677,11 +796,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
           />
           <div>
             {eligible.map(({id, token0, token1, fee, tickLower, tickUpper}, i) => {
-              // A per-call `failure` is one oracle reverting; `valuesError` is the multicall never
-              // landing. Both leave the row without a price, and only reading the first would let a
-              // dead RPC render as a row still loading.
-              const rowError = valuesError || valueResults?.[i]?.status === 'failure';
-              const rowValue = rowError ? undefined : (valueResults?.[i]?.result as bigint | undefined);
+              const {value: rowValue, isError: rowError} = prices[i];
               return (
               <div key={id.toString()} className="flex items-center justify-between border-t border-[var(--border)] pt-3 mt-3 first:border-0 first:pt-0 first:mt-0">
                 <div>
