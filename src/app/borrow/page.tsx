@@ -264,7 +264,9 @@ function PoolOption({
 
   return (
     <label
-      className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+      // The focusable element is the visually hidden radio, so the ring has to be drawn by the row
+      // around it: without this, tabbing through the group moves an invisible cursor.
+      className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)] ${
         selected
           ? 'border-[var(--accent)] bg-[var(--accent)]/5'
           : 'border-[var(--border)] hover:border-[var(--muted)]'
@@ -277,7 +279,11 @@ function PoolOption({
           selected ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--muted)]'
         }`}
       />
-      <TokenChip label={pool.symbol} />
+      {/* The chip renders the symbol as text, which the row states again beside it. Left in the
+          accessible name it would announce every option as "USDC USDC". */}
+      <span aria-hidden>
+        <TokenChip label={pool.symbol} />
+      </span>
       <span className="font-medium">{pool.symbol}</span>
       <span className="ml-auto flex gap-5 text-right text-xs">
         <span>
