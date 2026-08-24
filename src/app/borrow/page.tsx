@@ -310,7 +310,7 @@ function DepositV2Card({
   const {borrowAsset, setBorrowAsset} = useBorrowAssetChoice(pools);
 
   const {data: lpBalance, refetch: refetchBalance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'balanceOf', args: [owner]});
-  const {data: allowance, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
+  const {data: allowance, isError: allowanceError, refetch: refetchAllowance} = useReadContract({address: deployments.v2Pair, abi: erc20Abi, functionName: 'allowance', args: [owner, deployments.v2Adapter]});
 
   const balance = (lpBalance as bigint) ?? 0n;
   const underlying = useV2Underlying(deployments.v2Pair, balance);
@@ -318,12 +318,19 @@ function DepositV2Card({
   const config = useCollateralConfig(LP_TYPE_V2);
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
-  // The same test ActionButton applies before deciding whether to send an approval, so the count
-  // promised here is the count of dialogs the click actually opens. An unread allowance counts as
-  // insufficient, which is the direction that over-promises a prompt rather than under-promising
-  // one: a confirmation that does not appear is a pleasant surprise, one that does is a broken
-  // instruction.
-  const confirmations = ((allowance as bigint) ?? 0n) < balance ? 2 : 1;
+  // One value, read once and used both to count the prompts and to decide whether to send an
+  // approval, so the sentence above the button and the behaviour of the button are the same
+  // decision rather than two that happen to agree. Computing them from the read separately leaves
+  // the promise true only for as long as nobody edits one of the two expressions.
+  //
+  // An allowance that could not be read counts as zero rather than as whatever TanStack Query still
+  // has cached, which for an errored refetch is the previous block's answer. Zero over-promises a
+  // prompt instead of under-promising one — a confirmation that does not appear is a pleasant
+  // surprise, one that does is a broken instruction — and it is the direction that fails closed:
+  // an approval sent against an allowance that turns out to be sufficient is redundant, one skipped
+  // against an allowance that turns out not to be reverts the deposit.
+  const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
+  const confirmations = allowanceValue < balance ? 2 : 1;
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
 
   return (
@@ -366,6 +373,7 @@ function DepositV2Card({
           collateral="Your whole LP balance goes in as one position."
           borrowSymbol={borrowSymbol}
           confirmations={confirmations}
+          delay={unlockBlocks}
         />
 
         {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
@@ -374,7 +382,7 @@ function DepositV2Card({
             the alternative is sending a deposit() the protocol may reject and charging the user gas
             to find out. */}
         <ActionButton
-          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: (allowance as bigint) ?? 0n}}
+          approve={{token: deployments.v2Pair, spender: deployments.v2Adapter, amount: balance, allowance: allowanceValue}}
           address={deployments.positionManager}
           abi={positionManagerAbi}
           functionName="deposit"
@@ -454,6 +462,7 @@ function DepositTerms({
   collateral,
   borrowSymbol,
   confirmations,
+  delay,
 }: {
   /** What is handed over, phrased for the collateral type: a whole balance, or one NFT. */
   collateral: string;
@@ -461,8 +470,14 @@ function DepositTerms({
   borrowSymbol: string | undefined;
   /** Wallet prompts this deposit will raise, approval included. */
   confirmations: number;
+  /**
+   * Blocks between the deposit and the first block that will accept a borrow, or undefined while
+   * the figure is unread. Passed in rather than read here so that the delay quoted before the
+   * deposit and the one quoted in the note after it come from one read on one card, instead of two
+   * observers that agree only for as long as they are configured identically.
+   */
+  delay: bigint | undefined;
 }) {
-  const delay = useBorrowUnlockDelay();
   return (
     <div className="rounded-lg border border-[var(--border)] px-3 py-2.5 space-y-1.5">
       <p className="text-xs font-medium text-[var(--muted-strong)]">Before you deposit</p>
@@ -640,6 +655,7 @@ function V3DepositCard({owner, pools, onDone}: {owner: `0x${string}`; pools: Sub
             collateral="The position you choose below goes in on its own."
             borrowSymbol={borrowSymbol}
             confirmations={1}
+            delay={unlockBlocks}
           />
           <div>
             {eligible.map(({id, token0, token1, fee, tickLower, tickUpper}, i) => {
