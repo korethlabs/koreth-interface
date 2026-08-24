@@ -6,6 +6,7 @@ import {deployments} from '@/generated/deployments';
 import {protocolCoreAbi} from '@/generated/abis';
 import {useCollateralPools} from './useSubgraph';
 import {v2PairAbi} from '@/lib/v2';
+import {LIVE_REFETCH_MS} from '@/lib/chain';
 
 /** One accepted pool, identified by what it holds rather than by its address alone. */
 export interface AcceptedPool {
@@ -79,7 +80,11 @@ export function useAcceptedCollateral(): AcceptedCollateralResult {
         args: [address] as const,
       },
     ]),
-    query: {enabled: addresses.length > 0},
+    // Polled, because isLpPoolSupported is what makes the chain the adjudicator and not just the
+    // classifier: a pool delisted after this mounted stays on offer until something asks again, and
+    // a deposit into it reverts LP_POOL_NOT_SUPPORTED. The subgraph query above refreshes on its own
+    // interval, but it only ever adds pools — dropping one is the answer that has to come from here.
+    query: {enabled: addresses.length > 0, refetchInterval: LIVE_REFETCH_MS},
   });
 
   return useMemo(() => {

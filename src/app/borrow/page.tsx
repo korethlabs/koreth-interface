@@ -113,8 +113,13 @@ export default function BorrowPage() {
                 until it can be read.
               </div>
             ) : enabled.size === 0 || (accepted.v2.length === 0 && accepted.v3.length === 0) ? (
+              /* Two things end up here — RiskManager having disabled every LP type, and the
+                 whitelist holding no pools — and the wording covers both rather than naming one.
+                 Both are the protocol declining to take anything, neither is something the user
+                 can act on differently, and a message that named types while the cause was an
+                 empty whitelist would be precise about the wrong half. */
               <div className="card p-10 text-center text-[var(--muted)]">
-                No collateral types are currently accepted.
+                The protocol is not accepting any collateral right now.
               </div>
             ) : (
               <div className="grid lg:grid-cols-2 gap-4">
