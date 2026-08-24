@@ -420,8 +420,14 @@ function V2DepositCard({
   // has cached, which for an errored refetch is the previous block's answer. Zero over-promises a
   // prompt instead of under-promising one — a confirmation that does not appear is a pleasant
   // surprise, one that does is a broken instruction.
+  //
+  // Three when there is a short but non-zero allowance to clear first, which is the same condition
+  // the button resets on. Counting that case as two would be the one direction that misleads:
+  // the extra prompt arrives unannounced, and an unexplained wallet request in the middle of a
+  // sequence is what a user reads as the app having been compromised.
   const allowanceValue = allowanceError ? 0n : ((allowance as bigint) ?? 0n);
-  const confirmations = allowanceValue < (balance ?? 0n) ? 2 : 1;
+  const confirmations =
+    allowanceValue >= (balance ?? 0n) ? 1 : allowanceValue > 0n ? 3 : 2;
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
   const selectedLabel = selected ? pairLabel(selected, symbolOf) : undefined;
 
@@ -656,7 +662,10 @@ function DepositTerms({
         <li>
           {confirmations === 1
             ? 'One wallet confirmation.'
-            : `${confirmations} wallet confirmations, back to back: an approval, then the deposit.`}
+            : confirmations === 2
+              ? 'Two wallet confirmations, back to back: an approval, then the deposit.'
+              : 'Three wallet confirmations, back to back: your current allowance is cleared to zero, ' +
+                'set to the deposit amount, then the deposit itself.'}
         </li>
         {/* Stated here rather than only counted down afterwards. The delay is protocol-wide, so it
             is knowable before the deposit that starts it — and a user who expects to borrow in the

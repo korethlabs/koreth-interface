@@ -1,6 +1,6 @@
 'use client';
 
-import {useState} from 'react';
+import {useRef, useState} from 'react';
 import {useAccount, useWriteContract, usePublicClient} from 'wagmi';
 import {erc20Abi, type Abi, type Address} from 'viem';
 
@@ -39,9 +39,15 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
   const {address: account} = useAccount();
   const [step, setStep] = useState<Step>('idle');
   const [error, setError] = useState('');
+  // `step` disables the button, but only once React has re-rendered, and the first thing a click
+  // does is await an allowance read. A second click during that read passes the `busy` check, reads
+  // the same insufficient allowance, and queues a second approval and a second main call. The ref
+  // is set in the same tick as the click, before anything is awaited.
+  const running = useRef(false);
 
   async function run() {
-    if (!publicClient || !account) return;
+    if (!publicClient || !account || running.current) return;
+    running.current = true;
     setError('');
 
     async function sendApproval(amount: bigint) {
@@ -85,6 +91,7 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
     } catch (e) {
       setError(e instanceof Error ? e.message.split('\n')[0] : String(e));
     } finally {
+      running.current = false;
       setStep('idle');
     }
   }

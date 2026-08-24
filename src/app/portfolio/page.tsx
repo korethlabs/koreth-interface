@@ -222,10 +222,15 @@ function PositionCard({
               }}
             />
           </div>
+          {/* No prompt count. The button reads the allowance when it is clicked, and the number of
+              approvals depends on what it finds — a leftover allowance on a token like USDT has to
+              be cleared before a new one can be set, which is a confirmation of its own. Naming a
+              number here would mean predicting from a value read at render what the button decides
+              from a value read at click, and the two disagreeing is worse than saying neither. */}
           <p className="text-xs text-[var(--muted)]">
-            Repaying returns borrowed {symbol} to the protocol and lowers your debt. When your {symbol}
-            allowance is too low you&rsquo;ll first confirm an approval, then the repayment (two wallet
-            prompts). Clear your debt fully to withdraw your collateral.
+            Repaying returns borrowed {symbol} to the protocol and lowers your debt. If your {symbol}{' '}
+            allowance is too low you&rsquo;ll confirm an approval first, then the repayment. Clear your
+            debt fully to withdraw your collateral.
           </p>
         </div>
       )}
