@@ -141,11 +141,17 @@ export default function BorrowPage() {
               </div>
             ) : (
               <div className="grid lg:grid-cols-2 gap-4">
+                {/* Keyed by the account, so switching wallets in the extension builds new cards
+                    rather than re-rendering these with a different `owner`. Their local state is
+                    all about one account — most sharply the note confirming a deposit, which
+                    persists for the session and would otherwise carry a "✓ Deposited" from the
+                    previous wallet onto a card now describing balances the new one has never
+                    deposited. */}
                 {enabled.has('UniswapV2') && (
-                  <DepositV2Card owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <DepositV2Card key={address} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
                 {enabled.has('UniswapV3') && (
-                  <V3DepositCard owner={address!} pools={poolList} onDone={() => refetchPositions()} />
+                  <V3DepositCard key={address} owner={address!} pools={poolList} onDone={() => refetchPositions()} />
                 )}
               </div>
             )}
