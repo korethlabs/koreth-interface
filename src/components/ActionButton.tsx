@@ -62,8 +62,17 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
     onBusyChange?.(true);
     setError('');
 
+    // Every step of the sequence names the account the first one was decided for. An injected
+    // wallet can switch accounts between the allowance read and the writes that follow it, and
+    // wagmi sends from whichever is connected at the time — so the allowance of A would authorise
+    // an approval by B, or on a repay, B would be sending against A's position. Passed rather than
+    // re-read, and a wallet that no longer holds this account refuses the request, which is the
+    // right way for it to end: nothing is signed on a premise that stopped being true.
+    const sender = account;
+
     async function sendApproval(amount: bigint) {
       const hash = await writeContractAsync({
+        account: sender,
         address: approve!.token,
         abi: erc20Abi,
         functionName: 'approve',
@@ -78,7 +87,7 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
           address: approve.token,
           abi: erc20Abi,
           functionName: 'allowance',
-          args: [account!, approve.spender],
+          args: [sender, approve.spender],
         });
         if (allowance < approve.amount) {
           setStep('approving');
@@ -97,7 +106,7 @@ export function ActionButton({approve, address, abi, functionName, args, label, 
         }
       }
       setStep('sending');
-      const hash = await writeContractAsync({address, abi, functionName, args} as Parameters<typeof writeContractAsync>[0]);
+      const hash = await writeContractAsync({account: sender, address, abi, functionName, args} as Parameters<typeof writeContractAsync>[0]);
       await publicClient.waitForTransactionReceipt({hash});
       onConfirmed?.();
     } catch (e) {
