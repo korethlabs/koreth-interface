@@ -50,6 +50,7 @@ export default function MarketsPage() {
                   rows={pools}
                   isError={poolsError}
                   columns={POOL_COLUMNS}
+                  subject="lending pools"
                   empty="No lending pools are deployed."
                   render={(p) => <PoolRow key={p.id} pool={p} />}
                 />
@@ -87,6 +88,7 @@ export default function MarketsPage() {
                   rows={collateralTypes}
                   isError={collateralError}
                   columns={COLLATERAL_COLUMNS}
+                  subject="collateral types"
                   empty="No collateral types are currently accepted."
                   render={(c) => <CollateralRow key={c.id} collateral={c} />}
                 />
@@ -111,13 +113,16 @@ function TableBody<T>({
   rows,
   isError,
   columns,
+  subject,
   empty,
   render,
 }: {
   rows: T[] | undefined;
   isError: boolean;
   columns: number;
-  /** What to say when the query succeeded and returned nothing. */
+  /** Plural noun for what this table lists, so the two shared messages name the right thing. */
+  subject: string;
+  /** What to say when the query succeeded and returned nothing, which is table-specific. */
   empty: string;
   render: (row: T) => React.ReactNode;
 }) {
@@ -129,8 +134,8 @@ function TableBody<T>({
     return (
       <TableMessage columns={columns}>
         {isError
-          ? 'Could not reach the indexer, so the market list is unavailable. Positions and balances are read from the chain directly and are unaffected.'
-          : 'Loading markets…'}
+          ? `Could not reach the indexer, so ${subject} cannot be listed. Positions and balances are read from the chain directly and are unaffected.`
+          : `Loading ${subject}…`}
       </TableMessage>
     );
   }
