@@ -57,10 +57,16 @@ jobs:
 
       - run: npm ci
 
+      # Pinned rather than `stable`, for the same reason the Solidity repos pin exactly: this job
+      # compiles koreth-v1-core with via-IR (the "Build core" step) to generate the ABIs every
+      # contract call here is type-checked against, so a forge that differs from the one the
+      # contracts are tested with would type-check the interface against ABIs nobody else produced.
+      # Keep this on the same version as koreth-v1-core and koreth-v1-periphery (v1.7.1) and bump
+      # it deliberately, in the same commit as the version bump there.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: v1.7.1
 
       - name: Cache core build
         uses: actions/cache@v4
