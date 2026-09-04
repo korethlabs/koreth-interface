@@ -13,12 +13,17 @@ jobs:
   build:
     name: typecheck + build
     runs-on: ubuntu-latest
-    # Sized so that hitting it is itself the diagnosis. A cold via-IR compile of core has been
-    # observed at just over 30 minutes and a warm one takes a few, so 45 clears the worst
-    # legitimate run while still cutting off anything that is stuck. That distinction is the
-    # point: a job cancelled at a timeout we chose names its own cause, whereas a job the runner
-    # reclaims reports only "exit 143" and looks like a compiler crash.
-    timeout-minutes: 45
+    env:
+      # Single-sourced because it is used twice: the toolchain installs it, and the build cache is
+      # keyed on it. Those must never disagree. Keep it on the same version as koreth-v1-core and
+      # koreth-v1-periphery, and bump it deliberately, in the same commit as the bump there.
+      FOUNDRY_VERSION: v1.7.1
+    # Sized so that hitting it is itself the diagnosis rather than a mystery. With core's tests
+    # and scripts skipped the build is minutes, so 20 is far above any healthy run while still
+    # cutting off anything stuck. That distinction is the point: a job cancelled at a limit we
+    # chose names its own cause, whereas a job the runner reclaims reports only "exit 143" and
+    # reads like a compiler crash.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -66,51 +71,61 @@ jobs:
       # compiles koreth-v1-core with via-IR (the "Build core" step) to generate the ABIs every
       # contract call here is type-checked against, so a forge that differs from the one the
       # contracts are tested with would type-check the interface against ABIs nobody else produced.
-      # Keep this on the same version as koreth-v1-core and koreth-v1-periphery (v1.7.1) and bump
-      # it deliberately, in the same commit as the version bump there.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.7.1
+          version: ${{ env.FOUNDRY_VERSION }}
 
-      # The run id in the key is what keeps this cache alive, and it is not optional.
+      # Two things about this key are load-bearing, and both were learned the hard way.
       #
-      # actions/cache saves nothing when the run began with an exact hit on the primary key: it
-      # assumes the entry it restored is already current. Entries are also immutable, so a key that
-      # hits can never be rewritten. Without the suffix the key here is
-      # hashFiles('core/src/**/*.sol', 'core/foundry.toml') — core's sources, which a pull request
-      # against *this* repository never touches. That makes it a constant. It hit on every run,
-      # therefore saved on none, and stayed frozen at whatever the first job happened to store,
-      # while forge recompiled the whole of core every time. Suffixing the run id makes every
-      # primary key a miss, so every job saves and restore-keys does the fetching.
+      # The run id: actions/cache saves nothing when the run began with an exact hit on the primary
+      # key, since it assumes what it restored is already current, and entries are immutable so a
+      # key that hits can never be rewritten. Keyed only on core's sources — which a pull request
+      # against *this* repository never touches — the key was a constant. It hit on every run,
+      # therefore saved on none, and stayed frozen at whatever the first job stored. The API showed
+      # it plainly: one entry, created once, last_accessed_at advancing for days while created_at
+      # never moved. `gh api repos/<owner>/<repo>/actions/caches` is the fastest way to see this,
+      # and it does not require reading a single run log.
       #
-      # The second way it freezes: actions/cache writes in a post step, and a job killed by the
-      # runner never reaches its post step. So a run that dies preserves intact the stale entry
-      # that made it slow enough to die. Both arms have the same consequence, and it is the one
-      # worth knowing before touching this file — re-running a red build cannot fix it, because a
-      # re-run restores the same entry, faces the same rebuild and dies the same way. The failure
-      # is self-preserving, and pressing the button again is not a remedy however many times it is
-      # pressed.
+      # The Foundry version: artifacts are only reusable by the toolchain that produced them, so a
+      # version bump silently invalidates every cached artifact while leaving the key identical.
+      # Hashing foundry.toml does not cover this — the config is not the compiler. Naming the
+      # version in the key means a bump gets a fresh namespace instead of poisoning the old one.
+      #
+      # What is *not* a fix: pressing re-run. actions/cache writes in a post step, so a job the
+      # runner kills never saves, and a run that dies leaves intact the entry that made it slow
+      # enough to die. Both of the above and this one converge on the same point — a re-run
+      # restores the same entry, faces the same work and fails the same way. The failure preserves
+      # its own cause, however many times the button is pressed.
       - name: Cache core build
         uses: actions/cache@v4
         with:
           path: |
             core/out
             core/cache
-          key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-${{ github.run_id }}
+          key: core-${{ runner.os }}-${{ env.FOUNDRY_VERSION }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-${{ github.run_id }}
           restore-keys: |
-            core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-
-            core-${{ runner.os }}-
+            core-${{ runner.os }}-${{ env.FOUNDRY_VERSION }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-
+            core-${{ runner.os }}-${{ env.FOUNDRY_VERSION }}-
 
-      # --threads 1 serializes solc so only one via-IR unit is resident at a time, capping peak
-      # memory on the small 2-core runner during a cold full rebuild. It trades build time for
-      # headroom, which is only affordable because the step above keeps the cache warm: a cold
-      # serialized compile of the whole of core has been measured at just over 30 minutes, which
-      # is long enough for a runner reclaim to land on it. Read a slow "Build core" as a cache
-      # problem first, not as a compiler one.
+      # This job needs eight ABIs, all of them from core's src/ — the list is in
+      # scripts/core-artifacts.mjs. Compiling core's tests and scripts to produce them is work
+      # nothing here consumes, and under via-IR it is most of the cost: measured on one machine,
+      # cold, the full build is 197 files in 623s while --skip test --skip script is 112 files in
+      # 11s. That is the difference between a build long enough for the runner to reclaim the VM
+      # mid-compile and one that finishes well inside any window.
+      #
+      # This does not weaken the check. prepare-frontend.mjs reads each artifact by path, so an
+      # artifact that --skip wrongly excluded is a hard read failure, not a silently thinner
+      # binding. Core's tests are still compiled and run — in core's own CI, which is where they
+      # belong.
+      #
+      # --threads 1 serializes solc so one via-IR unit is resident at a time, capping peak memory
+      # on the 2-core runner. Kept as-is: the skip above is the variable being changed here, and
+      # core measured a cold build peaking near 12GB, so the headroom is not obviously spare.
       - name: Build core
         working-directory: core
-        run: forge build --threads 1
+        run: forge build --skip test --skip script --threads 1
 
       # Addresses come from a deployment that only exists on a running chain, so CI synthesizes
       # them; the ABIs above are real. See scripts/stub-core-deployment.mjs for why that is enough.
