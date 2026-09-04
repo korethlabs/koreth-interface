@@ -13,7 +13,12 @@ jobs:
   build:
     name: typecheck + build
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Sized so that hitting it is itself the diagnosis. A cold via-IR compile of core has been
+    # observed at just over 30 minutes and a warm one takes a few, so 45 clears the worst
+    # legitimate run while still cutting off anything that is stuck. That distinction is the
+    # point: a job cancelled at a timeout we chose names its own cause, whereas a job the runner
+    # reclaims reports only "exit 143" and looks like a compiler crash.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -68,18 +73,41 @@ jobs:
         with:
           version: v1.7.1
 
+      # The run id in the key is what keeps this cache alive, and it is not optional.
+      #
+      # actions/cache saves nothing when the run began with an exact hit on the primary key: it
+      # assumes the entry it restored is already current. Entries are also immutable, so a key that
+      # hits can never be rewritten. Without the suffix the key here is
+      # hashFiles('core/src/**/*.sol', 'core/foundry.toml') — core's sources, which a pull request
+      # against *this* repository never touches. That makes it a constant. It hit on every run,
+      # therefore saved on none, and stayed frozen at whatever the first job happened to store,
+      # while forge recompiled the whole of core every time. Suffixing the run id makes every
+      # primary key a miss, so every job saves and restore-keys does the fetching.
+      #
+      # The second way it freezes: actions/cache writes in a post step, and a job killed by the
+      # runner never reaches its post step. So a run that dies preserves intact the stale entry
+      # that made it slow enough to die. Both arms have the same consequence, and it is the one
+      # worth knowing before touching this file — re-running a red build cannot fix it, because a
+      # re-run restores the same entry, faces the same rebuild and dies the same way. The failure
+      # is self-preserving, and pressing the button again is not a remedy however many times it is
+      # pressed.
       - name: Cache core build
         uses: actions/cache@v4
         with:
           path: |
             core/out
             core/cache
-          key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}
-          restore-keys: core-${{ runner.os }}-
+          key: core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            core-${{ runner.os }}-${{ hashFiles('core/src/**/*.sol', 'core/foundry.toml') }}-
+            core-${{ runner.os }}-
 
       # --threads 1 serializes solc so only one via-IR unit is resident at a time, capping peak
-      # memory on the small 2-core runner during a cold full rebuild. Trades build time for
-      # headroom; warm-cache runs skip the rebuild entirely.
+      # memory on the small 2-core runner during a cold full rebuild. It trades build time for
+      # headroom, which is only affordable because the step above keeps the cache warm: a cold
+      # serialized compile of the whole of core has been measured at just over 30 minutes, which
+      # is long enough for a runner reclaim to land on it. Read a slow "Build core" as a cache
+      # problem first, not as a compiler one.
       - name: Build core
         working-directory: core
         run: forge build --threads 1
