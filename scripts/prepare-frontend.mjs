@@ -24,9 +24,14 @@ mkdirSync(genDir, {recursive: true});
 // Quoting follows NUMERIC_KEYS rather than the runtime type, so the emitted types are a
 // property of this repo and not of however local.json happened to be serialized — a chainId
 // that arrived as "1337" would otherwise silently become a string the whole app compares against.
+//
+// A key the app asks for and the deployment does not carry is a failure, not an omission: emitting
+// the object without it leaves `deployments.someKey` typed and undefined, which reaches the chain as
+// a call to no address rather than as a build that refused to finish. Same rule the subgraph's
+// prepare-local.mjs applies to its own addresses.
 const entries = DEPLOYMENT_KEYS
-    .filter((k) => dep[k] !== undefined)
     .map((k) => {
+        if (dep[k] === undefined) throw new Error(`local.json: missing '${k}'`);
         const numeric = NUMERIC_KEYS.has(k);
         if (numeric !== (typeof dep[k] === "number")) {
             throw new Error(`local.json: ${k} should be ${numeric ? "a number" : "a string"}, got ${typeof dep[k]}`);

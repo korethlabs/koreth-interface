@@ -17,7 +17,8 @@ import {
 import {useLpUsdValues, type LpPriceQuery} from '@/hooks/useLpUsdValue';
 import {useOwnedV3Positions} from '@/hooks/useOwnedV3Positions';
 import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
-import {formatAprBps, usePoolMarket} from '@/hooks/useLendingPool';
+import {formatAprBps, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
+import {useCollateralFrozen} from '@/hooks/useCircuitBreaker';
 import {BORROW_HEADROOM_BPS, usePositionSummary} from '@/hooks/usePositionSummary';
 import {HealthReadout, PositionStats} from '@/components/PositionStats';
 import {type SubgraphPool, type SubgraphPosition} from '@/lib/subgraph';
@@ -83,6 +84,10 @@ export default function BorrowPage() {
   // ProtocolCore, so the menu below is the protocol's own answer rather than a copy of it.
   const {data: accepted, isLoading: loadingAccepted, isError: acceptedError} = useAcceptedCollateral();
 
+  // deposit() carries `whenNotPaused`, which reads this same flag, and so do borrow() and repay().
+  // One read for the page rather than one per card, as /earn does with the actions it gates.
+  const paused = useProtocolPaused();
+
   return (
     <main className="max-w-5xl mx-auto px-6 py-16">
       <div className="mb-10">
@@ -91,6 +96,16 @@ export default function BorrowPage() {
           Deposit a Uniswap V2 LP or V3 position as collateral, then borrow a stablecoin.
         </p>
       </div>
+
+      {/* Said once, at the top, rather than under each dead button: the pause is protocol-wide and
+          it stops every action this page offers. Repaying is named because it is the one thing a
+          borrower with a position would come here to do in a hurry, and it is also stopped. */}
+      {paused === true && (
+        <div className="card p-4 mb-6 text-sm text-[var(--muted-strong)]">
+          The protocol is paused. Depositing, borrowing and repaying are disabled until it resumes;
+          collateral already deposited is unaffected.
+        </div>
+      )}
 
       {!isConnected ? (
         <div className="card p-10 text-center text-[var(--muted)]">Connect your wallet to deposit and borrow.</div>
@@ -111,6 +126,16 @@ export default function BorrowPage() {
               <div className="card p-10 text-center text-[var(--muted)]">
                 The collateral the protocol accepts could not be listed. Deposits are unavailable
                 until it can be read.
+              </div>
+            ) : accepted.v2.length === 0 && accepted.v3.length === 0 && accepted.suspended.length > 0 ? (
+              /* A separate screen from both of the ones around it, because it is a separate
+                 situation and the only one of the three that lifts. The protocol has not stopped
+                 accepting these pools and nothing has failed to be read — a guardian has halted
+                 them, and saying so is the difference between a user waiting and a user concluding
+                 Koreth no longer supports their pair. */
+              <div className="card p-10 text-center text-[var(--muted)]">
+                Every pool the protocol accepts as collateral is currently suspended, so no deposit
+                can be made.
               </div>
             ) : enabled.size === 0 || (accepted.v2.length === 0 && accepted.v3.length === 0) ? (
               /* Two things end up here — RiskManager having disabled every LP type, and the
@@ -135,13 +160,25 @@ export default function BorrowPage() {
                     on the address alone they would share a key, and suspending one type would hand
                     its state to the other rather than unmounting it. */}
                 {enabled.has('UniswapV2') && accepted.v2.length > 0 && (
-                  <V2DepositCard key={`v2:${address}`} owner={address!} pools={poolList} accepted={accepted.v2} onDone={() => refetchPositions()} />
+                  <V2DepositCard key={`v2:${address}`} owner={address!} pools={poolList} accepted={accepted.v2} paused={paused} onDone={() => refetchPositions()} />
                 )}
                 {enabled.has('UniswapV3') && accepted.v3.length > 0 && (
-                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} accepted={accepted.v3} onDone={() => refetchPositions()} />
+                  <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} accepted={accepted.v3} paused={paused} onDone={() => refetchPositions()} />
                 )}
               </div>
             )}
+            {/* Named, not counted. A user who came to deposit WETH/USDT and cannot find it needs to
+                read the words "WETH/USDT" to know the page has understood them; "1 pool is
+                suspended" leaves them checking whether they are on the right screen. Rendered
+                outside the branches above so it appears whether some pairs are still depositable or
+                none are. */}
+            {accepted?.suspended.length ? (
+              <p className="mt-3 text-xs text-[var(--muted-strong)]">
+                {accepted.suspended.map((p) => pairLabel(p, symbolOf)).join(', ')}{' '}
+                {accepted.suspended.length === 1 ? 'is' : 'are'} suspended by the protocol and cannot
+                be deposited right now. Collateral already deposited is unaffected.
+              </p>
+            ) : null}
           </section>
 
           <section>
@@ -151,7 +188,7 @@ export default function BorrowPage() {
             ) : (
               <div className="grid md:grid-cols-2 gap-4">
                 {(positions ?? []).map((p) => (
-                  <PositionBorrowCard key={p.id} position={p} onDone={() => refetchPositions()} />
+                  <PositionBorrowCard key={p.id} position={p} paused={paused} onDone={() => refetchPositions()} />
                 ))}
               </div>
             )}
@@ -316,15 +353,50 @@ function useAcceptedPairChoice(accepted: AcceptedPool[]) {
   return {pair, setPair};
 }
 
+/**
+ * Why a deposit card cannot offer a deposit right now, or undefined when it can.
+ *
+ * deposit() enforces four pool-level conditions. Two are per-pool and settled before a pool reaches
+ * a card at all — `isLpPoolSupported` and `poolPaused`, both re-asked against the chain in
+ * useAcceptedCollateral. The other two are not per-pool and are decided here: the protocol-wide
+ * pause, and whether the breaker has frozen this collateral type.
+ *
+ * Every unknown counts as blocking. A pause or a freeze can be thrown between one block and the
+ * next, so a read that did not arrive is not evidence that the switch is off — and the cost of
+ * treating it as such is a deposit the user signs and pays gas for the protocol to reject.
+ *
+ * The pause itself returns no reason: the banner at the top of the page has already said it, and
+ * repeating it under each card would state the same fact three times on one screen.
+ */
+function depositBlockedReason(
+  paused: boolean | undefined,
+  frozen: boolean | undefined,
+  lpLabel: string,
+): string | undefined {
+  if (paused === true) return undefined;
+  if (paused === undefined) {
+    return 'Whether the protocol is paused could not be read. Deposits are held back until it can be.';
+  }
+  if (frozen === true) {
+    return `${lpLabel} is frozen as collateral right now, so no new deposit of it is accepted. Withdrawing and repaying against positions you already hold are unaffected.`;
+  }
+  if (frozen === undefined) {
+    return `Whether ${lpLabel} is frozen as collateral could not be read. Deposits are held back until it can be.`;
+  }
+  return undefined;
+}
+
 function V2DepositCard({
   owner,
   pools,
   accepted,
+  paused,
   onDone,
 }: {
   owner: `0x${string}`;
   pools: SubgraphPool[];
   accepted: AcceptedPool[];
+  paused: boolean | undefined;
   onDone: () => void;
 }) {
   const [deposited, setDeposited] = useState(false);
@@ -413,6 +485,9 @@ function V2DepositCard({
     return {amounts: amount0 && amount1 ? `${amount0} + ${amount1}` : undefined};
   }, [underlying]);
   const config = useCollateralConfig(LP_TYPE_V2);
+  const frozen = useCollateralFrozen(LP_TYPE_V2);
+  const blocked = depositBlockedReason(paused, frozen, 'Uniswap V2 LP');
+  const depositable = paused === false && frozen === false && config?.enabled === true;
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
   // Used only to tell the user how many wallet prompts to expect. The button re-reads the allowance
@@ -541,11 +616,13 @@ function V2DepositCard({
           delay={unlockBlocks}
         />
 
-        {/* Gated on the RiskManager's own `enabled` flag rather than on the card being rendered:
-            the cards come from a subgraph query that can lag the chain, so a collateral type can
-            still be offered here after being suspended. An unread config disables the button too —
-            the alternative is sending a deposit() the protocol may reject and charging the user gas
-            to find out. */}
+        {blocked && <p className="text-xs text-[var(--muted-strong)]">{blocked}</p>}
+
+        {/* Gated on the protocol's own answers rather than on the card being rendered: the cards
+            come from a subgraph query that can lag the chain, so a collateral type can still be
+            offered here after being suspended, paused or frozen. Every unread answer disables the
+            button too — the alternative is sending a deposit() the protocol may reject and charging
+            the user gas to find out. */}
         <ActionButton
           approve={selected && {token: selected.address, spender: deployments.v2Adapter, amount: balance ?? 0n}}
           address={deployments.positionManager}
@@ -556,7 +633,7 @@ function V2DepositCard({
           onBusyChange={setDepositing}
           // An unread balance disables the button as firmly as a zero one: the whole balance is the
           // deposit amount, so not knowing it means having nothing to send.
-          disabled={!selected || balance === undefined || balance === 0n || borrowAsset === '' || !config?.enabled}
+          disabled={!selected || balance === undefined || balance === 0n || borrowAsset === '' || !depositable}
           onConfirmed={() => {
             setDeposited(true);
             refetchBalances();
@@ -708,11 +785,13 @@ function V3DepositCard({
   owner,
   pools,
   accepted,
+  paused,
   onDone,
 }: {
   owner: `0x${string}`;
   pools: SubgraphPool[];
   accepted: AcceptedPool[];
+  paused: boolean | undefined;
   onDone: () => void;
 }) {
   const [deposited, setDeposited] = useState(false);
@@ -746,8 +825,12 @@ function V3DepositCard({
     [eligible],
   );
   const prices = useLpUsdValues(LP_TYPE_V3, priceQueries);
-  // One config for every row: the risk parameters are per LP type, not per NFT.
+  // One config for every row: the risk parameters are per LP type, not per NFT. So is the freeze,
+  // which the breaker keys by LP type rather than by position.
   const config = useCollateralConfig(LP_TYPE_V3);
+  const frozen = useCollateralFrozen(LP_TYPE_V3);
+  const blocked = depositBlockedReason(paused, frozen, 'Uniswap V3 liquidity');
+  const depositable = paused === false && frozen === false && config?.enabled === true;
   const unlockBlocks = useBorrowUnlockDelay();
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
 
@@ -785,6 +868,7 @@ function V3DepositCard({
               V3 positions are not accepted as collateral right now.
             </p>
           )}
+          {blocked && <p className="text-sm text-[var(--muted-strong)]">{blocked}</p>}
           {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
               shown first so the user can review which NFTs they'll be depositing before granting
               custody. Deposit buttons stay disabled until the one-time approval is confirmed. */}
@@ -847,7 +931,7 @@ function V3DepositCard({
                   functionName="deposit"
                   args={[V3_NFT_MANAGER, id, 0n, borrowAsset]}
                   label="Deposit"
-                  disabled={borrowAsset === '' || !approvedAll || !config?.enabled}
+                  disabled={borrowAsset === '' || !approvedAll || !depositable}
                   onConfirmed={() => {
                     setDeposited(true);
                     refetchCount();
@@ -914,7 +998,15 @@ function useBorrowCooldown(depositBlock: bigint | undefined): {ready: boolean; b
   return {ready: false, blocksLeft: readyAt - blockNumber};
 }
 
-function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onDone: () => void}) {
+function PositionBorrowCard({
+  position,
+  paused,
+  onDone,
+}: {
+  position: SubgraphPosition;
+  paused: boolean | undefined;
+  onDone: () => void;
+}) {
   const [amount, setAmount] = useState('');
   const [ackRisk, setAckRisk] = useState(false);
   const id = BigInt(position.id);
@@ -948,8 +1040,10 @@ function PositionBorrowCard({position, onDone}: {position: SubgraphPosition; onD
   // when the risk parameters have not been read, and only one of those should let the user sign.
   // borrow() also rejects a position that no longer holds its LP and any draw against a collateral
   // type that has since been disabled — getMaxBorrow keeps pricing the stored LP through both, so
-  // the amount can look drawable right up to the revert.
-  const borrowable = isOpenOnChain(pos) === true && config?.enabled === true;
+  // the amount can look drawable right up to the revert. The pause is the same story one level up:
+  // borrow() carries `whenNotPaused`, and an unread flag counts as paused rather than as clear,
+  // since the cached `false` from before a pause is the answer least worth trusting.
+  const borrowable = isOpenOnChain(pos) === true && config?.enabled === true && paused === false;
   const valid =
     borrowable && parsed > 0n && available !== undefined && parsed <= available && projected !== undefined;
 
