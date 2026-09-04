@@ -35,7 +35,7 @@ jobs:
           CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
         run: |
           if [ -z "$CORE_TOKEN" ]; then
-            echo "::error::CORE_TOKEN is not set, so koreth-v1-core cannot be checked out and no ABIs can be generated. This is a credentials problem in the repository settings, not a problem with the code being built in this run."
+            echo "::error::CORE_TOKEN is not available to this run, so koreth-v1-core cannot be checked out and no ABIs can be generated. Either the secret is unset in the repository, or GitHub has withheld it (as it does for pull requests from forks). This is not a problem with the code being built."
             exit 1
           fi
 
