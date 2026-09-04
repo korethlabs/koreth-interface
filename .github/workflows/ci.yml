@@ -82,7 +82,7 @@ jobs:
 
       # Node deps are installed before the core build so the cheap step fails fast, and so a
       # failure here is isolated from the memory-heavy forge build that follows.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
