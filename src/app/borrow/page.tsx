@@ -5,7 +5,7 @@ import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wag
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {positionManagerAbi, lendingEngineAbi} from '@/generated/abis';
-import {useCollateralTypes, useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
+import {useSubgraphPools, useSubgraphPositions} from '@/hooks/useSubgraph';
 import {LP_TYPE_V2, LP_TYPE_V3, isOpenOnChain, positionTitle} from '@/hooks/useOnChainPosition';
 import {useV2Underlying} from '@/hooks/useV2Underlying';
 import {
@@ -16,7 +16,7 @@ import {
 } from '@/hooks/useAcceptedCollateral';
 import {useLpUsdValues, type LpPriceQuery} from '@/hooks/useLpUsdValue';
 import {useOwnedV3Positions} from '@/hooks/useOwnedV3Positions';
-import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, type CollateralConfig} from '@/hooks/useCollateralConfig';
+import {borrowingCapacityUsd, projectedHealthFactor, useCollateralConfig, useCollateralWired, type CollateralConfig} from '@/hooks/useCollateralConfig';
 import {formatAprBps, usePoolMarket, useProtocolPaused} from '@/hooks/useLendingPool';
 import {useCollateralFrozen} from '@/hooks/useCircuitBreaker';
 import {BORROW_HEADROOM_BPS, usePositionSummary} from '@/hooks/usePositionSummary';
@@ -73,12 +73,6 @@ export default function BorrowPage() {
   // deposit cards' default-selection effect.
   const poolList = useMemo(() => pools ?? [], [pools]);
 
-  // Which LP types the protocol will actually accept. deposit() reverts COLLATERAL_NOT_ENABLED
-  // for anything disabled in RiskManager, so rendering a card for a disabled type gives the user
-  // a button that always fails. Under isolated markets this was implicit — no market, no card.
-  const {data: collateralTypes, isLoading: loadingCollateral} = useCollateralTypes();
-  const enabled = useMemo(() => new Set((collateralTypes ?? []).map((c) => c.id)), [collateralTypes]);
-
   // Which pools the protocol accepts. This used to be a constant in this file, kept in step with the
   // chain by hand; it is now enumerated from the whitelist events and confirmed pool by pool against
   // ProtocolCore, so the menu below is the protocol's own answer rather than a copy of it.
@@ -113,10 +107,10 @@ export default function BorrowPage() {
         <div className="space-y-10">
           <section>
             <h2 className="text-sm font-medium text-[var(--muted)] uppercase tracking-wide mb-3">Deposit collateral</h2>
-            {/* `enabled` is empty both while the query is in flight and when the protocol really
-                accepts nothing, so the loading branch comes first — otherwise every page load
-                flashes the empty state before the cards appear. */}
-            {loadingCollateral || loadingAccepted ? (
+            {/* The accepted-pool list is empty both while the query is in flight and when the
+                whitelist really holds nothing, so the loading branch comes first — otherwise every
+                page load flashes the empty state before the cards appear. */}
+            {loadingAccepted ? (
               <div className="card p-10 text-center text-[var(--muted)]">Loading…</div>
             ) : acceptedError || accepted === undefined ? (
               /* Deliberately not a fallback to a hardcoded pair. Which pools are accepted is
@@ -137,12 +131,10 @@ export default function BorrowPage() {
                 Every pool the protocol accepts as collateral is currently suspended, so no deposit
                 can be made.
               </div>
-            ) : enabled.size === 0 || (accepted.v2.length === 0 && accepted.v3.length === 0) ? (
-              /* Two things end up here — RiskManager having disabled every LP type, and the
-                 whitelist holding no pools — and the wording covers both rather than naming one.
-                 Both are the protocol declining to take anything, neither is something the user
-                 can act on differently, and a message that named types while the cause was an
-                 empty whitelist would be precise about the wrong half. */
+            ) : accepted.v2.length === 0 && accepted.v3.length === 0 ? (
+              /* The whitelist holds no pools at all. A type that is whitelisted but disabled or
+                 unwired no longer lands here — its card renders and says which of the two it is,
+                 which is more than this screen could ever say. */
               <div className="card p-10 text-center text-[var(--muted)]">
                 The protocol is not accepting any collateral right now.
               </div>
@@ -156,13 +148,18 @@ export default function BorrowPage() {
                     deposited.
 
                     The collateral type is in the key as well as the address, because these two are
-                    siblings and each is mounted only while the RiskManager still accepts its type:
-                    on the address alone they would share a key, and suspending one type would hand
-                    its state to the other rather than unmounting it. */}
-                {enabled.has('UniswapV2') && accepted.v2.length > 0 && (
+                    siblings: on the address alone they would share a key, and one unmounting would
+                    hand its state to the other rather than discarding it.
+
+                    A card is mounted whenever the whitelist holds a pool of its type. Whether the
+                    protocol will take a deposit of that type is decided inside the card, from live
+                    reads, and shown as a reason — a type that is disabled or has no adapter still
+                    gets a card that says so, rather than vanishing from a page that then looks as
+                    though Koreth never supported it. */}
+                {accepted.v2.length > 0 && (
                   <V2DepositCard key={`v2:${address}`} owner={address!} pools={poolList} accepted={accepted.v2} paused={paused} onDone={() => refetchPositions()} />
                 )}
-                {enabled.has('UniswapV3') && accepted.v3.length > 0 && (
+                {accepted.v3.length > 0 && (
                   <V3DepositCard key={`v3:${address}`} owner={address!} pools={poolList} accepted={accepted.v3} paused={paused} onDone={() => refetchPositions()} />
                 )}
               </div>
@@ -359,11 +356,16 @@ function useAcceptedPairChoice(accepted: AcceptedPool[]) {
  * deposit() enforces four pool-level conditions. Two are per-pool and settled before a pool reaches
  * a card at all — `isLpPoolSupported` and `poolPaused`, both re-asked against the chain in
  * useAcceptedCollateral. The other two are not per-pool and are decided here: the protocol-wide
- * pause, and whether the breaker has frozen this collateral type.
+ * pause, and whether the breaker has frozen this collateral type. Alongside them sit the two facts
+ * about the type itself — whether RiskManager still enables it, and whether it has an adapter and
+ * an oracle at all.
  *
  * Every unknown counts as blocking. A pause or a freeze can be thrown between one block and the
  * next, so a read that did not arrive is not evidence that the switch is off — and the cost of
  * treating it as such is a deposit the user signs and pays gas for the protocol to reject.
+ *
+ * The order runs from the widest cause to the narrowest, so a protocol-wide halt is not reported as
+ * a fact about Uniswap V3.
  *
  * The pause itself returns no reason: the banner at the top of the page has already said it, and
  * repeating it under each card would state the same fact three times on one screen.
@@ -371,6 +373,8 @@ function useAcceptedPairChoice(accepted: AcceptedPool[]) {
 function depositBlockedReason(
   paused: boolean | undefined,
   frozen: boolean | undefined,
+  wired: boolean | undefined,
+  config: CollateralConfig | undefined,
   lpLabel: string,
 ): string | undefined {
   if (paused === true) return undefined;
@@ -382,6 +386,22 @@ function depositBlockedReason(
   }
   if (frozen === undefined) {
     return `Whether ${lpLabel} is frozen as collateral could not be read. Deposits are held back until it can be.`;
+  }
+  // Said before the risk config is consulted, because it is the more fundamental absence: a type
+  // with no adapter has nothing to take custody of the LP, whatever its risk parameters say. The
+  // wording avoids "disabled" for that reason — nobody switched this off, it was never wired up on
+  // this deployment, and telling a user to wait for it to be re-enabled would be misleading.
+  if (wired === false) {
+    return `${lpLabel} is not available as collateral on this deployment.`;
+  }
+  if (wired === undefined) {
+    return `Whether ${lpLabel} can be taken as collateral could not be read. Deposits are held back until it can be.`;
+  }
+  if (config !== undefined && !config.enabled) {
+    return `${lpLabel} is not being accepted as collateral right now. Withdrawing and repaying against positions you already hold are unaffected.`;
+  }
+  if (config === undefined) {
+    return `The risk parameters for ${lpLabel} could not be read. Deposits are held back until they can be.`;
   }
   return undefined;
 }
@@ -486,8 +506,9 @@ function V2DepositCard({
   }, [underlying]);
   const config = useCollateralConfig(LP_TYPE_V2);
   const frozen = useCollateralFrozen(LP_TYPE_V2);
-  const blocked = depositBlockedReason(paused, frozen, 'Uniswap V2 LP');
-  const depositable = paused === false && frozen === false && config?.enabled === true;
+  const wired = useCollateralWired(LP_TYPE_V2);
+  const blocked = depositBlockedReason(paused, frozen, wired, config, 'Uniswap V2 LP');
+  const depositable = paused === false && frozen === false && wired === true && config?.enabled === true;
   const capacity = borrowingCapacityUsd(lpUsd, config);
   const unlockBlocks = useBorrowUnlockDelay();
   // Used only to tell the user how many wallet prompts to expect. The button re-reads the allowance
@@ -829,8 +850,9 @@ function V3DepositCard({
   // which the breaker keys by LP type rather than by position.
   const config = useCollateralConfig(LP_TYPE_V3);
   const frozen = useCollateralFrozen(LP_TYPE_V3);
-  const blocked = depositBlockedReason(paused, frozen, 'Uniswap V3 liquidity');
-  const depositable = paused === false && frozen === false && config?.enabled === true;
+  const wired = useCollateralWired(LP_TYPE_V3);
+  const blocked = depositBlockedReason(paused, frozen, wired, config, 'Uniswap V3 liquidity');
+  const depositable = paused === false && frozen === false && wired === true && config?.enabled === true;
   const unlockBlocks = useBorrowUnlockDelay();
   const borrowSymbol = pools.find((p) => p.borrowAsset === borrowAsset)?.symbol;
 
@@ -863,11 +885,13 @@ function V3DepositCard({
         </p>
       ) : (
         <div className="space-y-3">
-          {config && !config.enabled && (
-            <p className="text-sm text-[var(--muted)]">
-              V3 positions are not accepted as collateral right now.
-            </p>
-          )}
+          {/* One reason, from one place. A disabled risk config used to be announced here as well as
+              by depositBlockedReason, and the two did not always agree: when the type has no adapter
+              the reason is "not available on this deployment" while this said "not right now", which
+              are contradictory answers to the same question. depositBlockedReason already covers
+              every state this rendered in — a disabled config leaves it silent only when the
+              protocol is paused, and that is deliberate for every card, because the page banner has
+              already said so. */}
           {blocked && <p className="text-sm text-[var(--muted-strong)]">{blocked}</p>}
           {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
               shown first so the user can review which NFTs they'll be depositing before granting
