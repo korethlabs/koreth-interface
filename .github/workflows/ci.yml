@@ -17,6 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This job's second step checks out a *private sibling repository*, so its single most likely
+      # failure is a credential rather than the code under test. Without this guard that arrives as
+      # a git authentication error under a step named after the repo, which reads as "the repo moved
+      # or the ref is wrong" and sends the next person down the wrong investigation. The token being
+      # absent already fails the run — a private checkout has no skip-and-continue path — so this
+      # buys legibility, not safety.
+      - name: Require a token that can read koreth-v1-core
+        env:
+          CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: |
+          if [ -z "$CORE_TOKEN" ]; then
+            echo "::error::CORE_TOKEN is not set, so koreth-v1-core cannot be checked out and no ABIs can be generated. This is a credentials problem, not a problem with the code in this pull request."
+            exit 1
+          fi
+
       # The interface does not compile without src/generated, and that is produced from core:
       # the ABIs it type-checks every contract call against come out of core's forge output.
       # Checking out and compiling core is therefore not optional here — it is what makes this
