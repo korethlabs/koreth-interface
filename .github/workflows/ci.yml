@@ -30,7 +30,7 @@ jobs:
       # An empty token is checked rather than a broken one because the two fail differently, and
       # counterintuitively: an *invalid* token already fails loudly at clone time, while an absent
       # one is the quiet case. The more complete outage is the less visible of the two.
-      - name: Require a token that can read koreth-v1-core
+      - name: Require CORE_TOKEN to be set
         env:
           CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
         run: |
