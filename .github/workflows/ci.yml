@@ -25,7 +25,7 @@ jobs:
     # reads like a compiler crash.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # This job's next step checks out a *private sibling repository*, so its single most likely
       # failure is a credential rather than the code under test. Without this guard that arrives as
@@ -54,7 +54,7 @@ jobs:
       # Checking out and compiling core is therefore not optional here — it is what makes this
       # job able to catch an interface that has drifted from the contracts.
       - name: Check out koreth-v1-core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: korethlabs/koreth-v1-core
           token: ${{ secrets.SUBMODULE_TOKEN }}
