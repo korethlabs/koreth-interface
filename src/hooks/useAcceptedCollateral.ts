@@ -3,8 +3,9 @@
 import {useMemo} from 'react';
 import {useReadContracts} from 'wagmi';
 import {deployments} from '@/generated/deployments';
-import {protocolCoreAbi} from '@/generated/abis';
+import {circuitBreakerAbi, protocolCoreAbi} from '@/generated/abis';
 import {useCollateralPools} from './useSubgraph';
+import {useCircuitBreaker} from './useCircuitBreaker';
 import {v2PairAbi} from '@/lib/v2';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
 
@@ -20,6 +21,12 @@ export interface AcceptedPool {
 export interface AcceptedCollateral {
   v2: AcceptedPool[];
   v3: AcceptedPool[];
+  /**
+   * Pools the protocol still whitelists but the circuit breaker has halted. Kept apart from `v2`
+   * and `v3` rather than dropped, because "Koreth has suspended this pair" and "Koreth does not
+   * take this pair" are different sentences and only the first one ends.
+   */
+  suspended: AcceptedPool[];
 }
 
 export interface AcceptedCollateralResult {
@@ -37,7 +44,7 @@ const v3PoolAbi = [
   {type: 'function', name: 'fee', stateMutability: 'view', inputs: [], outputs: [{type: 'uint24'}]},
 ] as const;
 
-const READS_PER_POOL = 4;
+const READS_PER_POOL = 5;
 
 /**
  * Which collateral the protocol accepts, split by DEX version.
@@ -52,6 +59,10 @@ const READS_PER_POOL = 4;
  *  - `isLpPoolSupported`, re-asked per pool. If the index has not yet caught a delisting, offering
  *    the pool would send a deposit that reverts LP_POOL_NOT_SUPPORTED and charge the user gas to
  *    discover it.
+ *  - `poolPaused`, for the same reason and a likelier one. deposit() checks the whitelist and the
+ *    breaker one line apart, but only delisting removes a pool from the index — a halted pool stays
+ *    whitelisted and stays listed, so nothing above would notice it. It is offered, and the deposit
+ *    reverts POOL_CIRCUIT_BREAKER.
  *
  * `data` is `undefined` whenever the answer is unknown, and `isLoading`/`isError` say which kind of
  * unknown it is. A shortened list is indistinguishable from a protocol that accepts less, and it
@@ -61,13 +72,14 @@ const READS_PER_POOL = 4;
  */
 export function useAcceptedCollateral(): AcceptedCollateralResult {
   const {data: pools, isError: poolsError} = useCollateralPools();
+  const breaker = useCircuitBreaker();
   const addresses = useMemo(
     () => (pools ?? []).map((p) => p.address as `0x${string}`),
     [pools],
   );
 
   const {data, isError} = useReadContracts({
-    // Four reads per pool, kept in this order so the results can be sliced by index below.
+    // Five reads per pool, kept in this order so the results can be sliced by index below.
     allowFailure: true,
     contracts: addresses.flatMap((address) => [
       {address, abi: v3PoolAbi, functionName: 'fee' as const},
@@ -79,22 +91,36 @@ export function useAcceptedCollateral(): AcceptedCollateralResult {
         functionName: 'isLpPoolSupported' as const,
         args: [address] as const,
       },
+      {
+        address: breaker.address,
+        abi: circuitBreakerAbi,
+        functionName: 'poolPaused' as const,
+        args: [address] as const,
+      },
     ]),
     // Polled, because isLpPoolSupported is what makes the chain the adjudicator and not just the
     // classifier: a pool delisted after this mounted stays on offer until something asks again, and
     // a deposit into it reverts LP_POOL_NOT_SUPPORTED. The subgraph query above refreshes on its own
     // interval, but it only ever adds pools — dropping one is the answer that has to come from here.
-    query: {enabled: addresses.length > 0, refetchInterval: LIVE_REFETCH_MS},
+    query: {enabled: addresses.length > 0 && !!breaker.address, refetchInterval: LIVE_REFETCH_MS},
   });
 
   return useMemo(() => {
     if (poolsError) return {data: undefined, isLoading: false, isError: true};
     if (pools === undefined) return {data: undefined, isLoading: true, isError: false};
     // A whitelist that is genuinely empty is a real answer, and a different one from not knowing.
-    if (addresses.length === 0) return {data: {v2: [], v3: []}, isLoading: false, isError: false};
+    if (addresses.length === 0) {
+      return {data: {v2: [], v3: [], suspended: []}, isLoading: false, isError: false};
+    }
+    // A breaker that cannot be located halts the listing rather than being skipped. Two of the four
+    // conditions deposit() enforces live behind it, so without it there is no basis on which to call
+    // any pool depositable — and the alternative, listing them anyway, is precisely the assumption
+    // this hook exists to refuse.
+    if (breaker.isError) return {data: undefined, isLoading: false, isError: true};
+    if (breaker.address === undefined) return {data: undefined, isLoading: true, isError: false};
     if (isError) return {data: undefined, isLoading: false, isError: true};
     if (data === undefined) return {data: undefined, isLoading: true, isError: false};
-    // The loop below reads the results positionally, four per pool. If that arithmetic ever stops
+    // The loop below reads the results positionally, five per pool. If that arithmetic ever stops
     // holding — a read added to the batch without READS_PER_POOL following it — every pool would be
     // classified off someone else's results, which is silently wrong rather than visibly broken.
     if (data.length !== addresses.length * READS_PER_POOL) {
@@ -103,17 +129,19 @@ export function useAcceptedCollateral(): AcceptedCollateralResult {
 
     const v2: AcceptedPool[] = [];
     const v3: AcceptedPool[] = [];
+    const suspended: AcceptedPool[] = [];
     for (let i = 0; i < addresses.length; i++) {
-      const [feeRead, token0Read, token1Read, supportedRead] = data.slice(
+      const [feeRead, token0Read, token1Read, supportedRead, pausedRead] = data.slice(
         i * READS_PER_POOL,
         (i + 1) * READS_PER_POOL,
       );
-      // A pool whose tokens or current standing could not be read cannot be classified, and
-      // dropping it alone would quietly narrow the protocol. Fail the whole hook instead.
+      // A pool whose tokens, current standing or halt state could not be read cannot be classified,
+      // and dropping it alone would quietly narrow the protocol. Fail the whole hook instead.
       if (
         token0Read.status === 'failure' ||
         token1Read.status === 'failure' ||
-        supportedRead.status === 'failure'
+        supportedRead.status === 'failure' ||
+        pausedRead.status === 'failure'
       ) {
         return {data: undefined, isLoading: false, isError: true};
       }
@@ -125,14 +153,20 @@ export function useAcceptedCollateral(): AcceptedCollateralResult {
         token0: token0Read.result as `0x${string}`,
         token1: token1Read.result as `0x${string}`,
       };
+      // Checked after the whitelist, so a pool that has been both delisted and halted is reported
+      // as delisted — the condition deposit() would fail on first, and the one that does not lift.
+      if (pausedRead.result === true) {
+        suspended.push(pool);
+        continue;
+      }
       if (feeRead.status === 'success') {
         v3.push({...pool, fee: Number(feeRead.result)});
       } else {
         v2.push(pool);
       }
     }
-    return {data: {v2, v3}, isLoading: false, isError: false};
-  }, [pools, poolsError, addresses, data, isError]);
+    return {data: {v2, v3, suspended}, isLoading: false, isError: false};
+  }, [pools, poolsError, addresses, breaker.address, breaker.isError, data, isError]);
 }
 
 /**
