@@ -1142,6 +1142,15 @@ function PositionBorrowCard({
               : `Borrowing unlocks in ${cooldown.blocksLeft.toString()} block${cooldown.blocksLeft === 1n ? '' : 's'} — a short delay after each deposit that stops a single transaction from moving the price and borrowing against it.`}
           </p>
         )}
+        {/* The same rule as the cooldown line above, for the other flag that holds the button down
+            silently. A paused protocol is announced once at the top of the page, so only the unread
+            case is stated here — it disables the button exactly like a pause does, and without this
+            it would do so with every figure on the card looking healthy. */}
+        {paused === undefined && (
+          <p className="text-xs text-[var(--muted)]">
+            Checking whether the protocol is paused — borrowing stays disabled until that is known.
+          </p>
+        )}
       </div>
     </div>
   );
