@@ -24,6 +24,7 @@ export const ABI_ARTIFACTS = {
     lpOracleHubAbi: "LPOracleHub.sol/LPOracleHub.json",
     riskManagerAbi: "RiskManager.sol/RiskManager.json",
     protocolCoreAbi: "ProtocolCore.sol/ProtocolCore.json",
+    circuitBreakerAbi: "CircuitBreaker.sol/CircuitBreaker.json",
 };
 
 /** Which keys are numbers rather than addresses — the stub and the emitter both need this. */
