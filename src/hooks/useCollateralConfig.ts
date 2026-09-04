@@ -50,8 +50,8 @@ export function useRiskManager(): `0x${string}` | undefined {
  *
  * That is reachable on a normal deploy, not just by admin error: the deploy script registers each
  * adapter only when the chain being deployed to names the DEX that adapter wraps, so a chain
- * without one leaves a fully implemented LP type unadaptered while its risk config is whatever was
- * seeded.
+ * without one leaves a fully implemented LP type without an adapter while its risk config is
+ * whatever was seeded.
  *
  * Both halves are required. The adapter is what receives the LP, and the oracle is what prices it —
  * they are registered by two independent admin calls, and `getOracle` reverts ORACLE_NOT_FOUND, so
@@ -69,10 +69,18 @@ export function useRiskManager(): `0x${string}` | undefined {
  * false when the individual calls fail: with the reads unreachable, `isError` is false and `data`
  * arrives holding two failures.
  *
- * Read once, with no polling. `registerAdapter` requires the slot to be empty, so an adapter is
- * write-once; `registerOracle` may replace an oracle but has no path that sets one back to zero.
- * Neither predicate can go from true to false while the page is open, so there is nothing for a
- * refetch interval to catch.
+ * Read once per mount, because neither predicate can go from true to false while the page is open.
+ * The two registries reach that guarantee differently, and it is two claims rather than one:
+ * `registerAdapter` requires the slot to be empty, so an adapter is write-once; `registerOracle`
+ * has no such requirement and may replace an oracle freely, but no path sets one back to zero. So
+ * for oracles it is the predicate that latches, not the address — a caller wanting the oracle
+ * address itself, rather than its presence, cannot cache it the way this may.
+ *
+ * `staleTime` is what makes that read-once real. The app's QueryClient is constructed with its
+ * defaults, which means a staleTime of zero and refetching on window focus and on reconnect, so
+ * without it a success would be re-fetched on every focus and a transient RPC failure would flip a
+ * settled `true` back to `undefined` — withdrawing a fact that cannot have changed. Failures are
+ * still retried: staleness governs cached successes, not errored queries.
  */
 export function useCollateralWired(lpType: number | undefined): boolean | undefined {
   const {data, isError} = useReadContracts({
@@ -83,7 +91,10 @@ export function useCollateralWired(lpType: number | undefined): boolean | undefi
             {address: deployments.core, abi: protocolCoreAbi, functionName: 'adapters', args: [lpType]},
             {address: deployments.core, abi: protocolCoreAbi, functionName: 'oracles', args: [lpType]},
           ],
-    query: {enabled: lpType !== undefined},
+    // A false answer is left to go stale on purpose. Registering an adapter or an oracle while the
+    // page is open can only turn this true, and until a reload the card stays blocked — which is
+    // the direction that fails closed.
+    query: {enabled: lpType !== undefined, staleTime: Infinity},
   });
   if (isError) return undefined;
   const [adapter, oracle] = data ?? [];
