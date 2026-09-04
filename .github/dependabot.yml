@@ -1,5 +1,38 @@
-# Dependabot vepÚ[Ûˆ\]\Ë‚ˆÂˆÈZ[›Üˆ[™]Ú[\È\™HÜ›İ\Y[Fò6–ævÆRvVV¶Ç’"6ò&÷WF–æRWw&FW26÷7@¢2öæR&Wf–Wr&F†W"F†âF÷¦VââÖ¦÷'2&RFVÆ–&W&FVÇ’ÆVPÕ¹rouped: they can
+# Dependabot version updates.
+#
+# Minor and patch bumps are grouped into a single weekly PR so routine upgrades cost
+# one review rather than a dozen. Majors are deliberately left ungrouped: they can
 # break at build time and each one deserves to be looked at on its own.
-version: 2	\]\Î‚ˆHXÚØYÙKYXÛÜŞ\İ[NˆĞ¢F—&V7F÷$è€ˆ¼ˆ(€€€Í¡•‘Õ±”è(€€€€€¥¹Ñ•ÉÙ…°èİ••­±ä(€€€€€‘…äèµ½¹‘…ä(€€€€€Ñ¥µ”è€ˆÀØèÀÀˆ(€€€€€Ñ¥µ•é½¹”èÑŒ½UQ(€€€½Á•¸µÁÕ±°µÉ•ÅÕ•ÍÑÌµ±¥µ¥Ğè€Ô(€€€½µµ¥Ğµµ•ÍÍ…e:
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
       prefix: chore(deps)
-      prefix-developmemˆÚÜ™J]‹Y\ÊBˆÜ›İ\Î‚ˆœK[Z[›Ü‹\]Ú‚ˆ]\›3¢²"¢%Ğ¢WFFR×G—W3 ¢ÒÖ–æ÷ ¢ÒF6€ ¢Ò6¶vRÖV6÷7—7FVÓ¢¥Ñ¡Õˆµ…Ñ¥½¹Ì(€€€‘¥É•Ñ½Éäè€ˆ¼ˆ(€€€Í¡•‘Õ±”è(€€€€€¥´eq˜[ˆÙYZÛBˆ^Nˆ[Û™^Bˆ[YNˆŒŒ‚ˆ[Y^›Û™Nˆ]ËÕUÂˆÜ[‹\[\™\]Y\İË[[Z]ˆÂˆÛÛ[Z][Y\ÜØYÙN‚ˆ™Yš^ˆÚÜ™JÚJBˆ&÷W3 ¢7F–öÌè(€€€€€€€Á…ÑÑ•É³: ["*"]
+      prefix-development: chore(dev-deps)
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      actions:
+        patterns: ["*"]
