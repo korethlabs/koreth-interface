@@ -27,6 +27,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This job's next step checks out a *private sibling repository*, so its single most likely
+      # failure is a credential rather than the code under test. Without this guard that arrives as
+      # a git authentication error under a step named after the repo, which reads as "the repo moved
+      # or the ref is wrong" and sends the next person down the wrong investigation.
+      #
+      # It buys legibility rather than safety: no step here is conditional, so a failed checkout
+      # already fails the run. That is the property to preserve — the way a missing credential turns
+      # into a green tick is by gating later steps on a boolean derived from it, which makes a total
+      # outage look like a series of reasonable skips. Do not introduce one.
+      #
+      # An empty token is checked rather than a broken one because the two fail differently, and
+      # counterintuitively: an *invalid* token already fails loudly at clone time, while an absent
+      # one is the quiet case. The more complete outage is the less visible of the two.
+      - name: Require CORE_TOKEN to be set
+        env:
+          CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: |
+          if [ -z "$CORE_TOKEN" ]; then
+            echo "::error::CORE_TOKEN is not available to this run, so koreth-v1-core cannot be checked out and no ABIs can be generated. Either the secret is unset in the repository, or GitHub has withheld it (as it does for pull requests from forks). This is not a problem with the code being built."
+            exit 1
+          fi
+
       # The interface does not compile without src/generated, and that is produced from core:
       # the ABIs it type-checks every contract call against come out of core's forge output.
       # Checking out and compiling core is therefore not optional here — it is what makes this
