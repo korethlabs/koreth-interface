@@ -20,7 +20,7 @@
     "react-dom": "^19.0.0",
     "recharts": "^2.15.0",
     "viem": "^2.25.0",
-    "wagmi": "^2.15.0"
+    "wagmi": "^3.7.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
