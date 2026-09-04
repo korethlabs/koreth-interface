@@ -1,6 +1,7 @@
 'use client';
 
-import {useReadContract} from 'wagmi';
+import {useReadContract, useReadContracts} from 'wagmi';
+import {zeroAddress} from 'viem';
 import {deployments} from '@/generated/deployments';
 import {protocolCoreAbi, riskManagerAbi} from '@/generated/abis';
 import {LIVE_REFETCH_MS} from '@/lib/chain';
@@ -35,6 +36,62 @@ export function useRiskManager(): `0x${string}` | undefined {
     query: {refetchInterval: LIVE_REFETCH_MS},
   });
   return isError ? undefined : (data as `0x${string}` | undefined);
+}
+
+/**
+ * Whether a collateral type has both the contracts a deposit of it needs, or undefined when that
+ * could not be read.
+ *
+ * `RiskManager.getCollateralConfig(...).enabled` is not this question. It is a risk-parameter
+ * switch, set by `setCollateralConfig`, which validates the LTV, threshold and bonus and never
+ * looks for an adapter — so a type can carry a complete, enabled risk config and still have no
+ * contract able to take custody of the LP. The two facts live in two contracts with nothing making
+ * one imply the other.
+ *
+ * That is reachable on a normal deploy, not just by admin error: the deploy script registers each
+ * adapter only when the chain being deployed to names the DEX that adapter wraps, so a chain
+ * without one leaves a fully implemented LP type unadaptered while its risk config is whatever was
+ * seeded.
+ *
+ * Both halves are required. The adapter is what receives the LP, and the oracle is what prices it —
+ * they are registered by two independent admin calls, and `getOracle` reverts ORACLE_NOT_FOUND, so
+ * a type with an adapter and no oracle takes the deposit only as far as the signature.
+ *
+ * Read through the public mappings rather than `getAdapter`/`getOracle`, which require a non-zero
+ * address and revert ADAPTER_NOT_FOUND / ORACLE_NOT_FOUND. Under `useReadContracts` a revert is not
+ * an error but a per-call `status: 'failure'` — the same shape an unreachable RPC produces — so
+ * those accessors would report "this type was never registered" and "the chain could not be read"
+ * identically, and the card would have to describe an ordinary unregistered type as one it failed
+ * to read. The mappings answer a decodable zero address for the first and leave `failure` to mean
+ * only the second.
+ *
+ * Each result is checked for `success` rather than relying on the hook's `isError`, which stays
+ * false when the individual calls fail: with the reads unreachable, `isError` is false and `data`
+ * arrives holding two failures.
+ *
+ * Read once, with no polling. `registerAdapter` requires the slot to be empty, so an adapter is
+ * write-once; `registerOracle` may replace an oracle but has no path that sets one back to zero.
+ * Neither predicate can go from true to false while the page is open, so there is nothing for a
+ * refetch interval to catch.
+ */
+export function useCollateralWired(lpType: number | undefined): boolean | undefined {
+  const {data, isError} = useReadContracts({
+    contracts:
+      lpType === undefined
+        ? []
+        : [
+            {address: deployments.core, abi: protocolCoreAbi, functionName: 'adapters', args: [lpType]},
+            {address: deployments.core, abi: protocolCoreAbi, functionName: 'oracles', args: [lpType]},
+          ],
+    query: {enabled: lpType !== undefined},
+  });
+  if (isError) return undefined;
+  const [adapter, oracle] = data ?? [];
+  // Both reads have to have landed. A per-call failure is what an unreachable chain looks like here
+  // — `isError` stays false and `data` arrives holding two failures — so it is checked result by
+  // result rather than on the hook.
+  if (adapter?.status !== 'success' || oracle?.status !== 'success') return undefined;
+  return adapter.result !== zeroAddress && oracle.result !== zeroAddress;
 }
 
 /** Risk parameters for one collateral type, or undefined until they have been read. */

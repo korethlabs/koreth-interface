@@ -1,6 +1,9 @@
 // Minimal GraphQL client for the Koreth subgraph (indexed protocol data).
-// Live per-position health/borrow-capacity comes from on-chain reads (PositionViewer);
-// this layer serves indexed lists + aggregates.
+//
+// This layer serves lists, history and aggregates. It does not answer anything a transaction is
+// bounded by — a health factor, a borrow capacity, an allowance, whether the protocol will accept a
+// deposit — because it lags the chain and can halt entirely, and a stale figure in one of those
+// places is one a user acts on. Those come from live contract reads in the hooks.
 
 export const SUBGRAPH_URL =
   process.env.NEXT_PUBLIC_SUBGRAPH_URL ??
