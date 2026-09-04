@@ -885,11 +885,13 @@ function V3DepositCard({
         </p>
       ) : (
         <div className="space-y-3">
-          {config && !config.enabled && (
-            <p className="text-sm text-[var(--muted)]">
-              V3 positions are not accepted as collateral right now.
-            </p>
-          )}
+          {/* One reason, from one place. A disabled risk config used to be announced here as well as
+              by depositBlockedReason, and the two did not always agree: when the type has no adapter
+              the reason is "not available on this deployment" while this said "not right now", which
+              are contradictory answers to the same question. depositBlockedReason already covers
+              every state this rendered in — a disabled config leaves it silent only when the
+              protocol is paused, and that is deliberate for every card, because the page banner has
+              already said so. */}
           {blocked && <p className="text-sm text-[var(--muted-strong)]">{blocked}</p>}
           {/* Approval is a gate on the Deposit action, not on seeing the list: the positions are
               shown first so the user can review which NFTs they'll be depositing before granting
