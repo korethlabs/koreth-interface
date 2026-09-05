@@ -25,7 +25,7 @@ jobs:
     # reads like a compiler crash.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # This job's next step checks out a *private sibling repository*, so its single most likely
       # failure is a credential rather than the code under test. Without this guard that arrives as
@@ -40,12 +40,12 @@ jobs:
       # An empty token is checked rather than a broken one because the two fail differently, and
       # counterintuitively: an *invalid* token already fails loudly at clone time, while an absent
       # one is the quiet case. The more complete outage is the less visible of the two.
-      - name: Require CORE_TOKEN to be set
+      - name: Require SUBMODULE_TOKEN to be set
         env:
-          CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
         run: |
-          if [ -z "$CORE_TOKEN" ]; then
-            echo "::error::CORE_TOKEN is not available to this run, so koreth-v1-core cannot be checked out and no ABIs can be generated. Either the secret is unset in the repository, or GitHub has withheld it (as it does for pull requests from forks). This is not a problem with the code being built."
+          if [ -z "$SUBMODULE_TOKEN" ]; then
+            echo "::error::SUBMODULE_TOKEN is not available to this run, so koreth-v1-core cannot be checked out and no ABIs can be generated. Either the secret is unset in the repository, or GitHub has withheld it (as it does for pull requests from forks). This is not a problem with the code being built."
             exit 1
           fi
 
@@ -54,10 +54,10 @@ jobs:
       # Checking out and compiling core is therefore not optional here — it is what makes this
       # job able to catch an interface that has drifted from the contracts.
       - name: Check out koreth-v1-core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: korethlabs/koreth-v1-core
-          token: ${{ secrets.CORE_TOKEN }}
+          token: ${{ secrets.SUBMODULE_TOKEN }}
           submodules: recursive
           path: core
 
@@ -82,7 +82,7 @@ jobs:
 
       # Node deps are installed before the core build so the cheap step fails fast, and so a
       # failure here is isolated from the memory-heavy forge build that follows.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -120,7 +120,7 @@ jobs:
       # restores the same entry, faces the same work and fails the same way. The failure preserves
       # its own cause, however many times the button is pressed.
       - name: Cache core build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             core/out
