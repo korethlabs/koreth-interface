@@ -4,9 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Without this, the only way to learn whether a commit builds is to create one. Every trigger
+  # above is an event about a *change*, so a commit already sitting on main can never be asked the
+  # question again — and a run that failed before it started leaves nothing to retry either, since
+  # GitHub refuses to re-run a startup_failure. That combination has already produced a head on main
+  # that no run has ever evaluated: three pull requests were merged during an outage in which jobs
+  # were failed at allocation, and afterwards there was no way to interrogate the result short of
+  # pushing another commit to main purely to provoke a run.
+  #
+  # So this is not a convenience. It is what makes the branch's state a question that can be asked
+  # rather than only observed in passing, which is the property wanted after any interruption —
+  # an infrastructure outage, a cache eviction, a dependency that changed underneath a green tick.
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keyed on the event as well as the ref, and that only becomes necessary with workflow_dispatch in
+  # the list above. A dispatch run reports github.ref as the branch it was started on, which for the
+  # case this trigger exists for is the same value a push to main reports. Sharing a group with
+  # cancel-in-progress means the two evict each other: asking main whether it builds would cancel
+  # the CI of a merge landing at that moment, and that merge would cancel the answer. Both are
+  # losses of exactly the signal being sought, and adding the trigger is what introduces them.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
