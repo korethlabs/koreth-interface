@@ -2,6 +2,9 @@
   "name": "@koreth/interface",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "prepare-frontend": "node scripts/prepare-frontend.mjs",
     "gen-favicons": "node scripts/gen-favicons.mjs",
