@@ -182,5 +182,25 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # Next 16 builds with Turbopack by default, which inverted what this job covers: the step
+      # below used to be a webpack build and now is not, leaving the webpack half of next.config.js
+      # — the half that is actually load-bearing — exercised by nothing. That half ignores the
+      # optional @x402/* modules which @coinbase/cdp-sdk imports and which are not installed;
+      # webpack resolves them eagerly through the @wagmi/connectors barrel, Turbopack tree-shakes
+      # them away and never sees them. So Turbopack builds green whether the ignore is there or
+      # not, and only a webpack build can tell you it was deleted. Measured by deleting it:
+      # `next build --webpack` exits 1 on "Can't resolve '@x402/evm/upto/client'" while
+      # `next build` exits 0 with no mention of x402 at all.
+      #
+      # A step rather than a job, because a job cannot inherit src/generated: it would have to
+      # check out the private koreth-v1-core again and recompile it under via-IR, which is where
+      # nearly all of this job's time goes, to add a build that takes seconds. Both builds share
+      # one workspace and one .next, which is safe here — nothing restores .next between runs (the
+      # cache above covers only core/out and core/cache), and running the two back to back in
+      # either order was measured green. webpack runs first so the .next a passing job leaves
+      # behind is Turbopack's, matching what actually gets deployed.
+      - name: Build with webpack
+        run: npx next build --webpack
+
       - name: Build
         run: npm run build
