@@ -29,6 +29,34 @@ const eslintConfig = defineConfig([
     // the file's own correctness is checked by tsc.
     'src/generated/**',
   ]),
+
+  {
+    rules: {
+      // Off because what it reports on does not happen in this build. The rule's own message is
+      // "React Compiler has skipped optimizing this component because the existing manual
+      // memoization could not be preserved" — a claim about the output of a compiler that never
+      // runs here, and a compiler that never runs cannot skip anything. Verified against this
+      // tree: next.config.js contains no `reactCompiler` key, Next 16's own default for it is
+      // unset (`defaultConfig.reactCompiler` and `defaultConfig.experimental.reactCompiler` both
+      // come back null when required from next/dist/server/config-shared), and
+      // babel-plugin-react-compiler is not installed — package-lock.json mentions it only as an
+      // optional peerDependency of `next`, and `npm ls babel-plugin-react-compiler` reports an
+      // empty tree. Every useMemo here is therefore executed exactly as written, and a finding
+      // that an optimisation was dropped describes an optimisation that was never attempted.
+      //
+      // Switched off here rather than at the call site, deliberately. An inline disable comment is
+      // a directive the next person copies to the next site that trips the rule, and each copy
+      // carries the exemption without the argument for it. One switch, one argument, one place to
+      // revisit.
+      //
+      // RE-ENABLE THIS RULE in whatever change enables the React Compiler. From that point the
+      // rule stops describing a hypothetical build and starts reporting memoization genuinely lost
+      // in compilation — which for src/hooks/useAcceptedCollateral.ts, the only site that currently
+      // trips it, would mean the classification of every whitelisted pool being redone on renders
+      // where none of its inputs moved.
+      'react-hooks/preserve-manual-memoization': 'off',
+    },
+  },
 ])
 
 export default eslintConfig
