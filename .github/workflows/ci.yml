@@ -58,11 +58,11 @@ jobs:
 
       - run: npm ci
 
-      # The package script rather than a command spelled out here, so that what CI runs and what
-      # `npm run lint` runs cannot drift into two checks with one name — and so that the fix for a
-      # red job is a command already written down in CLAUDE.md. `--max-warnings=0` lives in the
-      # script for that reason: put here, it would make CI strictly stricter than the thing
-      # developers run, which is the drift in its most confusing form.
+      # The package script rather than a command spelled out here, so that what CI runs and what a
+      # developer runs cannot drift into two checks with one name — and so that a red job names its
+      # own reproduction, `npm run lint`, defined in package.json. `--max-warnings=0` lives in that
+      # script for the same reason: placed here instead, it would make CI strictly stricter than the
+      # thing developers run, which is the drift in its most confusing form.
       #
       # That flag is there because 26 of the 113 rules this config enables are warn-severity, and
       # without it not one of them can ever fail. The set is not cosmetic: it holds
