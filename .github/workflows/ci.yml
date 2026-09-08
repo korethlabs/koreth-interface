@@ -58,8 +58,14 @@ jobs:
 
       - run: npm ci
 
-      # --max-warnings=0, because 26 of the 113 rules this config enables are warn-severity, and
-      # without the flag not one of them can ever fail the job. That set is not cosmetic: it holds
+      # The package script rather than a command spelled out here, so that what CI runs and what
+      # `npm run lint` runs cannot drift into two checks with one name — and so that the fix for a
+      # red job is a command already written down in CLAUDE.md. `--max-warnings=0` lives in the
+      # script for that reason: put here, it would make CI strictly stricter than the thing
+      # developers run, which is the drift in its most confusing form.
+      #
+      # That flag is there because 26 of the 113 rules this config enables are warn-severity, and
+      # without it not one of them can ever fail. The set is not cosmetic: it holds
       # react-hooks/exhaustive-deps and @typescript-eslint/no-unused-vars next to the @next/next
       # rules that ship at "warn" by design. Enumerated from the resolved config rather than assumed
       # — ESLint#calculateConfigForFile on src/app/borrow/page.tsx, counting severities.
@@ -73,7 +79,7 @@ jobs:
       # -f json` over 50 files reports 0 errors and 0 warnings. The flag therefore costs nothing to
       # adopt now, and only ever gets more expensive to adopt later.
       - name: Lint
-        run: npx eslint . --max-warnings=0
+        run: npm run lint
 
   build:
     name: typecheck + build
