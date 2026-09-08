@@ -28,6 +28,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # No lint job here yet, and that is a statement about the *findings*, not about the cost.
+  #
+  # On cost, lint is the one check that would not have to pay for the job below: measured by
+  # running `npx eslint .` in a fresh clone with src/generated absent and no Foundry installed,
+  # the result was identical to a full working tree — 50 files, same three findings. Nothing in
+  # eslint-config-next@16 resolves an import or asks for type information (no import/no-unresolved,
+  # and typescript-eslint runs without a `project`), so unresolved `@/generated/*` imports are
+  # invisible to it. A lint job is therefore checkout + setup-node + npm ci + eslint, seconds,
+  # with none of the via-IR compile that dominates the job below.
+  #
+  # What blocks it is that `npm run lint` currently exits 1 on three pre-existing errors that
+  # predate the config being committed (two react-hooks/set-state-in-effect in src/app/borrow,
+  # one react-hooks/preserve-manual-memoization in src/hooks/useAcceptedCollateral.ts). Wiring the
+  # job before those are decided would put main red on the first push, and the two ways to avoid
+  # that — continue-on-error, or switching the rules off to get a tick — both produce a check that
+  # passes without checking, which is the state this repo was already in when `next lint` had been
+  # silently broken since the Next 16 bump. Add the job in the same change that resolves them.
   build:
     name: typecheck + build
     runs-on: ubuntu-latest
