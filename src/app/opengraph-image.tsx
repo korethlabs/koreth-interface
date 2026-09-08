@@ -31,7 +31,9 @@ export default function OgImage() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {/* Plain <img>, not next/image: this renders inside ImageResponse (Satori), which
+              understands raw <img> and nothing about the optimizer. @next/next/no-img-element
+              exempts metadata routes such as this one, so no disable directive is needed. */}
           <img src={logoSrc} width={84} height={82} alt="" />
           <div style={{ fontSize: '34px', color: '#ffffff', letterSpacing: '0.08em', fontWeight: 600 }}>
             KORETH

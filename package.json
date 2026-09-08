@@ -11,7 +11,7 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "clean": "rm -rf .next"
   },
   "overrides": {
