@@ -28,23 +28,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # No lint job here yet, and that is a statement about the *findings*, not about the cost.
-  #
-  # On cost, lint is the one check that would not have to pay for the job below: measured by
-  # running `npx eslint .` in a fresh clone with src/generated absent and no Foundry installed,
-  # the result was identical to a full working tree — 50 files, same three findings. Nothing in
+  # Its own job, and the only check here that does not have to pay for the one below. Measured by
+  # running `npx eslint .` in a fresh clone with src/generated absent and no Foundry installed: the
+  # result was identical to a full working tree, 50 files and the same findings. Nothing in
   # eslint-config-next@16 resolves an import or asks for type information (no import/no-unresolved,
   # and typescript-eslint runs without a `project`), so unresolved `@/generated/*` imports are
-  # invisible to it. A lint job is therefore checkout + setup-node + npm ci + eslint, seconds,
-  # with none of the via-IR compile that dominates the job below.
+  # invisible to it. That is what makes checkout + setup-node + npm ci + eslint sufficient here, and
+  # it is why this is not a step bolted onto the build: attached there, a lint finding would wait on
+  # a via-IR compile of koreth-v1-core, and would go unreported entirely whenever that compile — or
+  # the private checkout it needs, which forks do not get a token for — failed first.
   #
-  # What blocks it is that `npm run lint` currently exits 1 on three pre-existing errors that
-  # predate the config being committed (two react-hooks/set-state-in-effect in src/app/borrow,
-  # one react-hooks/preserve-manual-memoization in src/hooks/useAcceptedCollateral.ts). Wiring the
-  # job before those are decided would put main red on the first push, and the two ways to avoid
-  # that — continue-on-error, or switching the rules off to get a tick — both produce a check that
-  # passes without checking, which is the state this repo was already in when `next lint` had been
-  # silently broken since the Next 16 bump. Add the job in the same change that resolves them.
+  # Deliberately without continue-on-error. A lint job that cannot fail is the state this repo was
+  # already in for the whole of the Next 16 era: `npm run lint` ran `next lint`, Next 16 had removed
+  # the subcommand, the word was parsed as a positional directory, and CI stayed green throughout.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same node-version and cache as the build job below. They are separate jobs linting and
+      # building the same package, so a version they disagree on would be a difference nobody
+      # chose.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The package script rather than a command spelled out here, so that what CI runs and what a
+      # developer runs cannot drift into two checks with one name — and so that a red job names its
+      # own reproduction, `npm run lint`, defined in package.json. `--max-warnings=0` lives in that
+      # script for the same reason: placed here instead, it would make CI strictly stricter than the
+      # thing developers run, which is the drift in its most confusing form.
+      #
+      # That flag is there because 26 of the 113 rules this config enables are warn-severity, and
+      # without it not one of them can ever fail. The set is not cosmetic: it holds
+      # react-hooks/exhaustive-deps and @typescript-eslint/no-unused-vars next to the @next/next
+      # rules that ship at "warn" by design. Enumerated from the resolved config rather than assumed
+      # — ESLint#calculateConfigForFile on src/app/borrow/page.tsx, counting severities.
+      #
+      # The cost is accepted with eyes open: a minor bump of eslint-config-next that adds a
+      # warn-severity rule, or widens one, can turn this red on a pull request that has nothing to
+      # do with it. That is a loud failure attached to the change that introduced it, and fixable
+      # there. The alternative is quiet, and permanent.
+      #
+      # The count it holds at is zero on this commit, measured rather than hoped: `npx eslint .
+      # -f json` over 50 files reports 0 errors and 0 warnings. The flag therefore costs nothing to
+      # adopt now, and only ever gets more expensive to adopt later.
+      - name: Lint
+        run: npm run lint
+
   build:
     name: typecheck + build
     runs-on: ubuntu-latest

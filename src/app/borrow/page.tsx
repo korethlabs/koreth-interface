@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useId, useMemo, useState} from 'react';
+import {useId, useMemo, useState} from 'react';
 import {useAccount, useBlockNumber, useReadContract, useReadContracts} from 'wagmi';
 import {erc20Abi, formatUnits, parseUnits} from 'viem';
 import {deployments} from '@/generated/deployments';
@@ -69,8 +69,8 @@ export default function BorrowPage() {
   const {data: positions, refetch: refetchPositions} = useSubgraphPositions(address);
 
   // Every pool accepts every collateral type now, so V2 and V3 deposits pick from the same list
-  // rather than each being tied to its own market. Memoized to keep a stable identity for the
-  // deposit cards' default-selection effect.
+  // rather than each being tied to its own market. Memoized so the two cards receive a stable
+  // array identity across renders where `pools` itself has not changed.
   const poolList = useMemo(() => pools ?? [], [pools]);
 
   // Which pools the protocol accepts. This used to be a constant in this file, kept in step with the
@@ -201,25 +201,24 @@ export default function BorrowPage() {
  * not a market — a single pool per asset now backs every collateral type.
  */
 function useBorrowAssetChoice(pools: SubgraphPool[]) {
+  // State holds the raw click, and the value handed out is resolved against the current list on
+  // every render. That ordering is the whole point: an effect can only correct a stale selection
+  // *after* a render has already happened with it, so between the pools changing and the effect
+  // flushing there is a paint in which `borrowAsset` is an address no longer on offer while the
+  // deposit button — which only checks `borrowAsset !== ''` — is enabled. Resolving here makes
+  // "the selection is in the list, or it is empty" true of every render rather than eventually.
+  //
+  // The two ways the raw value goes stale are both covered by one expression. A subgraph re-index
+  // makes `pools` come back with different addresses, and a selection that survived it would leave
+  // the radio group with nothing highlighted while the deposit reverted INVALID_POOL. An empty
+  // list means the query really did return nothing (react-query serves previous data throughout a
+  // refetch, so emptiness is an answer and not a gap), and there is no pool to fall back to, so
+  // the resolved value is '' and the button is off.
   const [borrowAsset, setBorrowAsset] = useState<`0x${string}` | ''>('');
-  useEffect(() => {
-    // Reset whenever the selection isn't in the list, not just when it's empty. A subgraph
-    // re-index makes `pools` go empty and come back with different addresses; keeping the stale
-    // one would leave the <select> rendering blank while still passing the non-empty check, and
-    // the deposit would revert INVALID_POOL.
-    // An empty list clears the selection rather than keeping the last one. react-query holds
-    // previous data across a refetch, so an empty `pools` means the query really did come back
-    // empty — and a leftover address would keep the deposit button enabled (it only checks
-    // `borrowAsset !== ''`) while the form says there are no pools, sending a doomed tx.
-    if (!pools.length) {
-      setBorrowAsset('');
-      return;
-    }
-    if (!pools.some((p) => p.borrowAsset === borrowAsset)) {
-      setBorrowAsset(pools[0].borrowAsset as `0x${string}`);
-    }
-  }, [pools, borrowAsset]);
-  return {borrowAsset, setBorrowAsset};
+  const resolved: `0x${string}` | '' = pools.some((p) => p.borrowAsset === borrowAsset)
+    ? borrowAsset
+    : ((pools[0]?.borrowAsset as `0x${string}` | undefined) ?? '');
+  return {borrowAsset: resolved, setBorrowAsset};
 }
 
 /**
@@ -331,23 +330,18 @@ const symbolOf = (address: string) => tokenInfo(address).symbol;
 /**
  * Picks which of the accepted pairs the deposit will lock.
  *
- * Same reset discipline as useBorrowAssetChoice, for the same reason: the accepted set is read from
- * the chain and can come back different, and a selection that is no longer in it would leave the
- * tab strip with nothing highlighted while the deposit button still pointed at the old pair — a
- * deposit that reverts LP_POOL_NOT_SUPPORTED once the protocol has dropped it.
+ * Resolved during render like useBorrowAssetChoice, for the same reason: the accepted set is read
+ * from the chain and can come back different, and a selection that is no longer in it would leave
+ * the tab strip with nothing highlighted while the deposit button still pointed at the old pair — a
+ * deposit that reverts LP_POOL_NOT_SUPPORTED once the protocol has dropped it. Deriving rather than
+ * correcting after the fact means that render never exists.
  */
 function useAcceptedPairChoice(accepted: AcceptedPool[]) {
   const [pair, setPair] = useState<`0x${string}` | ''>('');
-  useEffect(() => {
-    if (!accepted.length) {
-      setPair('');
-      return;
-    }
-    if (!accepted.some((p) => p.address === pair)) {
-      setPair(accepted[0].address);
-    }
-  }, [accepted, pair]);
-  return {pair, setPair};
+  const resolved: `0x${string}` | '' = accepted.some((p) => p.address === pair)
+    ? pair
+    : (accepted[0]?.address ?? '');
+  return {pair: resolved, setPair};
 }
 
 /**
