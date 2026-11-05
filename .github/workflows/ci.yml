@@ -103,11 +103,13 @@ jobs:
       # Checking out and compiling core is therefore not optional here — it is what makes this
       # job able to catch an interface that has drifted from the contracts.
       #
-      # Anonymous on purpose. koreth-v1-core and all four of its submodules are public, so no
-      # credential is needed and none is passed: a token here would be a key to whatever else it
-      # can read, wired into a public repository's workflow for no benefit. It is also what lets a
-      # pull request from a fork run this job at all — GitHub withholds secrets from those, so while
-      # this checkout depended on one, every fork PR failed this required check before building.
+      # No secret on purpose. koreth-v1-core and all four of its submodules are public, so with no
+      # `token` input actions/checkout falls back to this job's own GITHUB_TOKEN, which can read any
+      # public repository and is scoped to this one otherwise. A personal access token here would be
+      # a key to everything else it can read, wired into a public repository's workflow for no
+      # benefit. It is also what lets a pull request from a fork run this job at all — GitHub
+      # withholds secrets from those, so while this checkout depended on one, every fork PR failed
+      # this required check before building.
       #
       # If core ever goes private again, this step fails at clone time with an authentication
       # error. No later step is conditional on it, so that failure is the run's result — keep it
