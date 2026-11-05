@@ -36,7 +36,7 @@ jobs:
   # invisible to it. That is what makes checkout + setup-node + npm ci + eslint sufficient here, and
   # it is why this is not a step bolted onto the build: attached there, a lint finding would wait on
   # a via-IR compile of koreth-v1-core, and would go unreported entirely whenever that compile — or
-  # the private checkout it needs, which forks do not get a token for — failed first.
+  # the checkout of core it needs — failed first.
   #
   # Deliberately without continue-on-error. A lint job that cannot fail is the state this repo was
   # already in for the whole of the Next 16 era: `npm run lint` ran `next lint`, Next 16 had removed
@@ -98,37 +98,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # This job's next step checks out a *private sibling repository*, so its single most likely
-      # failure is a credential rather than the code under test. Without this guard that arrives as
-      # a git authentication error under a step named after the repo, which reads as "the repo moved
-      # or the ref is wrong" and sends the next person down the wrong investigation.
-      #
-      # It buys legibility rather than safety: no step here is conditional, so a failed checkout
-      # already fails the run. That is the property to preserve — the way a missing credential turns
-      # into a green tick is by gating later steps on a boolean derived from it, which makes a total
-      # outage look like a series of reasonable skips. Do not introduce one.
-      #
-      # An empty token is checked rather than a broken one because the two fail differently, and
-      # counterintuitively: an *invalid* token already fails loudly at clone time, while an absent
-      # one is the quiet case. The more complete outage is the less visible of the two.
-      - name: Require SUBMODULE_TOKEN to be set
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
-        run: |
-          if [ -z "$SUBMODULE_TOKEN" ]; then
-            echo "::error::SUBMODULE_TOKEN is not available to this run, so koreth-v1-core cannot be checked out and no ABIs can be generated. Either the secret is unset in the repository, or GitHub has withheld it (as it does for pull requests from forks). This is not a problem with the code being built."
-            exit 1
-          fi
-
       # The interface does not compile without src/generated, and that is produced from core:
       # the ABIs it type-checks every contract call against come out of core's forge output.
       # Checking out and compiling core is therefore not optional here — it is what makes this
       # job able to catch an interface that has drifted from the contracts.
+      #
+      # Anonymous on purpose. koreth-v1-core and all four of its submodules are public, so no
+      # credential is needed and none is passed: a token here would be a key to whatever else it
+      # can read, wired into a public repository's workflow for no benefit. It is also what lets a
+      # pull request from a fork run this job at all — GitHub withholds secrets from those, so while
+      # this checkout depended on one, every fork PR failed this required check before building.
+      #
+      # If core ever goes private again, this step fails at clone time with an authentication
+      # error. No later step is conditional on it, so that failure is the run's result — keep it
+      # that way: gating steps on a boolean derived from the checkout is how a total outage turns
+      # into a series of reasonable-looking skips and a green tick.
       - name: Check out koreth-v1-core
         uses: actions/checkout@v7
         with:
           repository: korethlabs/koreth-v1-core
-          token: ${{ secrets.SUBMODULE_TOKEN }}
           submodules: recursive
           path: core
 
@@ -157,6 +145,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # A checkout that exits 0 says the clone ran, not that the tree this job compiles is there.
+      # The "Cache core build" step below restores a core/out from an earlier run before forge
+      # runs, so a source that never arrived can still have an artifact on disk for
+      # prepare-frontend to read. This fails the job, naming what is missing, before the cache or
+      # the compiler get the chance to stand in for it. The required set is derived from
+      # scripts/core-artifacts.mjs, the table the generator reads, so the two cannot disagree.
+      #
+      # Placed after setup-node so it runs on the pinned Node rather than whatever the image ships,
+      # and before npm ci because it needs nothing from node_modules — only Node builtins.
+      - name: Require koreth-v1-core sources
+        env:
+          CORE_ROOT: ${{ github.workspace }}/core
+        run: node scripts/check-core-checkout.mjs
 
       - run: npm ci
 
@@ -246,7 +248,7 @@ jobs:
       # `next build` exits 0 with no mention of x402 at all.
       #
       # A step rather than a job, because a job cannot inherit src/generated: it would have to
-      # check out the private koreth-v1-core again and recompile it under via-IR, which is where
+      # check out koreth-v1-core again and recompile it under via-IR, which is where
       # nearly all of this job's time goes, to add a build that takes seconds. Both builds share
       # one workspace and one .next, which is safe here — nothing restores .next between runs (the
       # cache above covers only core/out and core/cache), and running the two back to back in
