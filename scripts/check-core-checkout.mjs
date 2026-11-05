@@ -17,7 +17,7 @@
 // directory after its source file, so "LendingPool.sol/LendingPool.json" needs a LendingPool.sol
 // somewhere under src/. Submodules are checked too, because core's sources import from lib/.
 import {execFileSync} from "node:child_process";
-import {existsSync, readdirSync} from "node:fs";
+import {existsSync, readdirSync, statSync} from "node:fs";
 import {join} from "node:path";
 import {ABI_ARTIFACTS} from "./core-artifacts.mjs";
 
@@ -25,14 +25,16 @@ const root = process.env.CORE_ROOT;
 if (!root) throw new Error("CORE_ROOT is not set");
 
 const problems = [];
+// Files, not paths: a directory that happens to carry the expected name is not the thing required.
+const isFile = (p) => existsSync(p) && statSync(p).isFile();
 
-if (!existsSync(join(root, "foundry.toml"))) problems.push(`${root}/foundry.toml is missing`);
+if (!isFile(join(root, "foundry.toml"))) problems.push(`${root}/foundry.toml is missing`);
 
 const srcDir = join(root, "src");
 const present = new Set();
 if (existsSync(srcDir)) {
-    for (const entry of readdirSync(srcDir, {recursive: true})) {
-        present.add(String(entry).split("/").pop());
+    for (const entry of readdirSync(srcDir, {recursive: true, withFileTypes: true})) {
+        if (entry.isFile()) present.add(entry.name);
     }
 } else {
     problems.push(`${srcDir} is missing`);
@@ -42,8 +44,12 @@ for (const artifact of Object.values(ABI_ARTIFACTS)) {
     if (!present.has(source)) problems.push(`no ${source} under ${srcDir} (needed for ${artifact})`);
 }
 
-// A leading "-" is an uninitialised submodule; anything git cannot answer is a failure in itself.
-if (existsSync(join(root, ".gitmodules"))) {
+// Core's sources import from lib/, and .gitmodules is what declares those libraries, so its absence
+// is a missing part of the tree rather than a reason to skip the check. A leading "-" in the status
+// is an uninitialised submodule; anything git cannot answer is a failure in itself.
+if (!isFile(join(root, ".gitmodules"))) {
+    problems.push(`${root}/.gitmodules is missing, so the libraries core imports cannot be checked`);
+} else {
     try {
         const status = execFileSync("git", ["-C", root, "submodule", "status", "--recursive"], {encoding: "utf8"});
         const missing = status.split("\n").filter((l) => l.startsWith("-")).map((l) => l.trim().split(/\s+/)[1]);
